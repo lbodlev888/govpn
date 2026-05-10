@@ -1,9 +1,3 @@
-github.com/bwesterb/go-ristretto v1.2.3 h1:1w53tCkGhCQ5djbat3+MH0BAQ5Kfgbt56UZQ/JMzngw=
-github.com/bwesterb/go-ristretto v1.2.3/go.mod h1:fUIoIZaG73pV5biE2Blr2xEzDoMj7NFEuV9ekS419A0=
-github.com/lbodlev888/go-spake v0.0.3 h1:kSQ0YWyLpqgtY+tZat5ylirbX5ynim3cqRgg3vhHEGM=
-github.com/lbodlev888/go-spake v0.0.3/go.mod h1:nim1Csq2p4iO7uFQlJVLld0+ch9ik7phhN4a+GM0ry8=
-github.com/lbodlev888/go-spake v0.0.4 h1:v2khYgWSnvvw7Bq6XsBB+ZNMOvKO6Hilf0LOrWKv7hQ=
-github.com/lbodlev888/go-spake v0.0.4/go.mod h1:nim1Csq2p4iO7uFQlJVLld0+ch9ik7phhN4a+GM0ry8=
 github.com/songgao/water v0.0.0-20200317203138-2b4b6d7c09d8 h1:TG/diQgUe0pntT/2D9tmUCz4VNwm9MfrtPr0SU2qSX8=
 github.com/songgao/water v0.0.0-20200317203138-2b4b6d7c09d8/go.mod h1:P5HUIBuIWKbyjl083/loAegFkfbFNx5i2qEP4CNbm7E=
 golang.org/x/crypto v0.51.0 h1:IBPXwPfKxY7cWQZ38ZCIRPI50YLeevDLlLnyC5wRGTI=

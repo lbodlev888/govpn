@@ -8,21 +8,28 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"vpn/client"
-	"vpn/config"
-	"vpn/crypto"
-	"vpn/server"
+
+	"github.com/lbodlev888/ownvpn/client"
+	"github.com/lbodlev888/ownvpn/config"
+	"github.com/lbodlev888/ownvpn/crypto"
+	"github.com/lbodlev888/ownvpn/server"
 )
 
 func main() {
 	serverMode := flag.Bool("server", false, "Run in server mode")
 	generateKeys := flag.Bool("genkey", false, "Run to generate cryptographic keys")
+	pubKey := flag.String("pubkey", "", "Get public key from private key")
 	configFile := flag.String("config", "", "Provide configuration file")
 
 	flag.Parse()
 
 	if *generateKeys {
 		crypto.GenerateCrypto()
+		return
+	}
+
+	if *pubKey != "" {
+		crypto.GetPublicKey(*pubKey)
 		return
 	}
 

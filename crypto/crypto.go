@@ -21,3 +21,19 @@ func GenerateCrypto() {
 	fmt.Printf("Private: %s\n", base64_decaps)
 	fmt.Printf("Public: %s\n", base64_encaps)
 }
+
+func GetPublicKey(pubKey string) {
+	raw_decaps, err := base64.StdEncoding.DecodeString(pubKey)
+	if err != nil {
+		log.Fatalln("Could not decode private key: " + err.Error())
+	}
+
+	decaps, err := mlkem.NewDecapsulationKey768(raw_decaps)
+	if err != nil {
+		log.Fatalln("Could not import private key: " + err.Error())
+	}
+
+	encaps := decaps.EncapsulationKey().Bytes()
+
+	fmt.Printf("Public: %s\n", base64.StdEncoding.EncodeToString(encaps))
+}

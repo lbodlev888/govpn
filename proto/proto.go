@@ -2,11 +2,11 @@ package proto
 
 type ClientHello struct {
 	Name string `json:"name"`
-	PublicKey []byte `json:"public_key"`
+	PublicData []byte `json:"public"`
 }
 
 type ServerHello struct {
-	PublicKey []byte `json:"public_key"`
+	PublicData []byte `json:"public"`
 	/*AssignedIP string `json:"assigned_ip"`
 	ServerIP string `json:"server_ip"`
 	Subnet int `json:"subnet"`*/

@@ -3,20 +3,21 @@ package server
 import (
 	"context"
 	"crypto/hkdf"
+	"crypto/mlkem"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net"
 	"sync"
-	"vpn/config"
-	"vpn/models"
-	"vpn/network"
-	"vpn/proto"
-	"vpn/tunif"
 
-	"github.com/lbodlev888/go-spake"
+	"github.com/lbodlev888/ownvpn/config"
+	"github.com/lbodlev888/ownvpn/models"
+	"github.com/lbodlev888/ownvpn/network"
+	"github.com/lbodlev888/ownvpn/proto"
+	"github.com/lbodlev888/ownvpn/tunif"
 	"github.com/songgao/water"
 	"golang.org/x/crypto/chacha20poly1305"
 )
@@ -31,17 +32,28 @@ var (
 	allowedPeers map[string]config.PeerConfig
 	wg sync.WaitGroup
 	virtualIP string
+	decapsKey *mlkem.DecapsulationKey768
 	iface *water.Interface
 )
 
 func RunServer(ctx context.Context, cfg *config.ServerConfig, stop context.CancelFunc) {
+	raw_decaps, err := base64.StdEncoding.DecodeString(cfg.DecapsKey)
+	if err != nil {
+		log.Fatalln("Could not decode private key of server: " + err.Error())
+	}
+
+	decapsKey, err = mlkem.NewDecapsulationKey768(raw_decaps)
+	if err != nil {
+		log.Fatalln("Could not import private key of server: " + err.Error())
+	}
+
 	virtualIP = cfg.VirtualIP
+
 	allowedPeers = make(map[string]config.PeerConfig)
 	for _, p := range cfg.Peers {
 		allowedPeers[p.Name] = p
 	}
 
-	var err error
 	iface, err = tunif.SetupInterface(fmt.Sprintf("%s/%d", cfg.VirtualIP, cfg.Subnet))
 	if err != nil {
 		log.Fatalln("Could not create tun interface: " + err.Error())
@@ -153,28 +165,35 @@ func handleClient(conn net.Conn) {
 		return
 	}
 
-	var spake spake.Spake
-	spake.Role = true
-	msg, err := spake.Start([]byte(peerCfg.Password))
+	raw_encaps, err := base64.StdEncoding.DecodeString(peerCfg.EncapsKey)
 	if err != nil {
-		fmt.Println("Failed to init spake: " + err.Error())
+		log.Printf("Coult not decode encaps key of peer %s: %v\n", peerCfg.Name, err)
 		return
 	}
 
+	encaps, err := mlkem.NewEncapsulationKey768(raw_encaps)
+	if err != nil {
+		log.Printf("Could not import public key of peer %s: %v\n", peerCfg.Name, err)
+		return
+	}
+
+	sharedKey2, ciphertext := encaps.Encapsulate()
+
 	if err := enc.Encode(proto.ServerHello{
-		PublicKey: msg,
+		PublicData: ciphertext,
 	}); err != nil {
 		log.Println("Failed to send serverHello: " + err.Error())
 		return
 	}
 
-	shared, err := spake.Finish(clientHello.PublicKey)
+	sharedKey1, err := decapsKey.Decapsulate(clientHello.PublicData)
 	if err != nil {
-		log.Println("Failed to derive shared secret: " + err.Error())
-		return
+		log.Printf("Could not decrypt clientHello from %s: %v\n", peerCfg.Name, err)
 	}
 
-	encryption_key, err := hkdf.Key(sha256.New, shared, nil, "own_vpn0.0.1", chacha20poly1305.KeySize)
+	final_key := append(sharedKey1, sharedKey2...)
+
+	encryption_key, err := hkdf.Key(sha256.New, final_key, nil, "own_vpn0.0.1", chacha20poly1305.KeySize)
 	if err != nil {
 		log.Println("Failed to derive encryption key: " + err.Error())
 		return
