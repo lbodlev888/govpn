@@ -1,7 +1,9 @@
 package crypto
 
 import (
+	"crypto/hkdf"
 	"crypto/mlkem"
+	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
 	"log"
@@ -54,4 +56,8 @@ func ParseEncapsKey(encaps_str string) (*mlkem.EncapsulationKey768, error) {
 	}
 
 	return mlkem.NewEncapsulationKey768(raw_encaps)
+}
+
+func DeriveEncryptionKey(material, salt []byte, infoString string, len int) ([]byte, error) {
+	return hkdf.Key(sha256.New, material, salt, infoString, len)
 }

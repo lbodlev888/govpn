@@ -2,13 +2,12 @@ package client
 
 import (
 	"context"
-	"crypto/hkdf"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net"
+	"sync"
 
 	"github.com/lbodlev888/ownvpn/config"
 	"github.com/lbodlev888/ownvpn/crypto"
@@ -76,7 +75,7 @@ func RunClient(ctx context.Context, cfg *config.PeerConfig, cancel context.Cance
 		log.Fatalln("Missing ownvpn version key in context")
 	}
 
-	encryptionKey, err := hkdf.Key(sha256.New, final_key, nil, infoString, chacha20poly1305.KeySize)
+	encryptionKey, err := crypto.DeriveEncryptionKey(final_key, nil, infoString, chacha20poly1305.KeySize)
 	if err != nil {
 		log.Println("Coult not derive encryption key: " + err.Error())
 		return
@@ -90,17 +89,21 @@ func RunClient(ctx context.Context, cfg *config.PeerConfig, cancel context.Cance
 		return
 	}
 
-	go func(){
-		defer cancel()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-			}
+	var wg sync.WaitGroup
 
+	wg.Go(func() {
+		<-ctx.Done()
+		log.Println("Received stop signal. Clossing everything")
+		conn.Close()
+		iface.Close()
+	})
+
+	wg.Go(func(){
+		for {
 			enc_frame, err := network.ReadFrame(conn)
 			if err != nil {
+				if ctx.Err() != nil { return }
+
 				log.Println("Failed to read: " + err.Error())
 				return
 			}
@@ -116,20 +119,15 @@ func RunClient(ctx context.Context, cfg *config.PeerConfig, cancel context.Cance
 
 			iface.Write(frame)
 		}
-	}()
+	})
 
 	packet := make([]byte, BUFFERSIZE)
 	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-
 		plen, err := iface.Read(packet)
 		if err != nil {
+			if ctx.Err() != nil { break }
+
 			log.Println("Failed to read: " + err.Error())
-			cancel()
 			break
 		}
 
@@ -144,4 +142,6 @@ func RunClient(ctx context.Context, cfg *config.PeerConfig, cancel context.Cance
 			break
 		}
 	}
+
+	wg.Wait()
 }

@@ -2,11 +2,8 @@ package server
 
 import (
 	"context"
-	"crypto/hkdf"
 	"crypto/mlkem"
 	"crypto/rand"
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -14,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/lbodlev888/ownvpn/config"
+	"github.com/lbodlev888/ownvpn/crypto"
 	"github.com/lbodlev888/ownvpn/models"
 	"github.com/lbodlev888/ownvpn/network"
 	"github.com/lbodlev888/ownvpn/proto"
@@ -37,14 +35,10 @@ var (
 )
 
 func RunServer(ctx context.Context, cfg *config.ServerConfig, stop context.CancelFunc) {
-	raw_decaps, err := base64.StdEncoding.DecodeString(cfg.DecapsKey)
+	var err error
+	decapsKey, err = crypto.ParseDecapsKey(cfg.DecapsKey)
 	if err != nil {
-		log.Fatalln("Could not decode private key of server: " + err.Error())
-	}
-
-	decapsKey, err = mlkem.NewDecapsulationKey768(raw_decaps)
-	if err != nil {
-		log.Fatalln("Could not import private key of server: " + err.Error())
+		log.Fatalln("Could not import private key: " + err.Error())
 	}
 
 	virtualIP = cfg.VirtualIP
@@ -165,16 +159,9 @@ func handleClient(ctx context.Context, conn net.Conn) {
 		return
 	}
 
-	raw_encaps, err := base64.StdEncoding.DecodeString(peerCfg.EncapsKey)
+	encaps, err := crypto.ParseEncapsKey(peerCfg.EncapsKey)
 	if err != nil {
-		log.Printf("Coult not decode encaps key of peer %s: %v\n", peerCfg.Name, err)
-		return
-	}
-
-	encaps, err := mlkem.NewEncapsulationKey768(raw_encaps)
-	if err != nil {
-		log.Printf("Could not import public key of peer %s: %v\n", peerCfg.Name, err)
-		return
+		log.Fatalf("Could not import public key of peer %s: %v\n", peerCfg.Name, err)
 	}
 
 	sharedKey2, ciphertext := encaps.Encapsulate()
@@ -198,7 +185,7 @@ func handleClient(ctx context.Context, conn net.Conn) {
 		log.Fatalln("Missing ownvpn version key in context")
 	}
 
-	encryption_key, err := hkdf.Key(sha256.New, final_key, nil, infoString, chacha20poly1305.KeySize)
+	encryption_key, err := crypto.DeriveEncryptionKey(final_key, nil, infoString, chacha20poly1305.KeySize)
 	if err != nil {
 		log.Println("Failed to derive encryption key: " + err.Error())
 		return
