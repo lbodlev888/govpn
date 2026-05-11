@@ -15,6 +15,8 @@ import (
 	"github.com/lbodlev888/ownvpn/server"
 )
 
+const OWNVPN_VERSION = "ownvpn0.0.3"
+
 func main() {
 	serverMode := flag.Bool("server", false, "Run in server mode")
 	generateKeys := flag.Bool("genkey", false, "Run to generate cryptographic keys")
@@ -38,7 +40,7 @@ func main() {
 		log.Fatalln("Missing configuration file")
 	}
 
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, cancel := signal.NotifyContext(context.WithValue(context.Background(), "version", OWNVPN_VERSION), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
 	file, err := os.Open(*configFile)

@@ -3,16 +3,15 @@ package client
 import (
 	"context"
 	"crypto/hkdf"
-	"crypto/mlkem"
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net"
 
 	"github.com/lbodlev888/ownvpn/config"
+	"github.com/lbodlev888/ownvpn/crypto"
 	"github.com/lbodlev888/ownvpn/network"
 	"github.com/lbodlev888/ownvpn/proto"
 	"github.com/lbodlev888/ownvpn/tunif"
@@ -32,16 +31,10 @@ func RunClient(ctx context.Context, cfg *config.PeerConfig, cancel context.Cance
 	iface, err := tunif.SetupInterface(fmt.Sprintf("%s/%d", cfg.VirtualIP, cfg.Subnet))
 	if err != nil { log.Fatalln("Could not create tun interface: " + err.Error()) }
 
-	raw_decaps, err := base64.StdEncoding.DecodeString(cfg.DecapsKey)
-	if err != nil { log.Fatalln("Could not decode private key: " + err.Error()) }
-
-	raw_encaps, err := base64.StdEncoding.DecodeString(cfg.EncapsKey)
-	if err != nil { log.Fatalln("Could not decode public key: " + err.Error()) }
-
-	decaps, err := mlkem.NewDecapsulationKey768(raw_decaps)
+	decaps, err := crypto.ParseDecapsKey(cfg.DecapsKey)
 	if err != nil { log.Fatalln("Could not import private key: " + err.Error()) }
 
-	encaps, err := mlkem.NewEncapsulationKey768(raw_encaps)
+	encaps, err := crypto.ParseEncapsKey(cfg.EncapsKey)
 	if err != nil { log.Fatalln("Could not import public key: " + err.Error()) }
 
 	sharedKey1, ciphertext := encaps.Encapsulate()
@@ -56,7 +49,7 @@ func RunClient(ctx context.Context, cfg *config.PeerConfig, cancel context.Cance
 	enc := json.NewEncoder(conn)
 	dec := json.NewDecoder(conn)
 
-	log.Println("This is config name: " + cfg.Name)
+	log.Println("Peer name: " + cfg.Name)
 	if err := enc.Encode(proto.ClientHello{
 		PublicData: ciphertext,
 		Name: cfg.Name,
@@ -78,7 +71,12 @@ func RunClient(ctx context.Context, cfg *config.PeerConfig, cancel context.Cance
 
 	final_key := append(sharedKey1, sharedKey2...)
 
-	encryptionKey, err := hkdf.Key(sha256.New, final_key, nil, "own_vpn0.0.1", chacha20poly1305.KeySize)
+	infoString, ok := ctx.Value("version").(string)
+	if !ok {
+		log.Fatalln("Missing ownvpn version key in context")
+	}
+
+	encryptionKey, err := hkdf.Key(sha256.New, final_key, nil, infoString, chacha20poly1305.KeySize)
 	if err != nil {
 		log.Println("Coult not derive encryption key: " + err.Error())
 		return

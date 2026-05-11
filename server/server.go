@@ -95,7 +95,7 @@ func acceptPeers(ctx context.Context, l net.Listener) {
 			log.Println("Failed to accept client: " + err.Error())
 			continue
 		}
-		wg.Go(func() { handleClient(client) })
+		wg.Go(func() { handleClient(ctx, client) })
 	}
 }
 
@@ -140,7 +140,7 @@ func processLocalIface(iface *water.Interface) {
 	}
 }
 
-func handleClient(conn net.Conn) {
+func handleClient(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
 	enc := json.NewEncoder(conn)
 	dec := json.NewDecoder(conn)
@@ -193,7 +193,12 @@ func handleClient(conn net.Conn) {
 
 	final_key := append(sharedKey1, sharedKey2...)
 
-	encryption_key, err := hkdf.Key(sha256.New, final_key, nil, "own_vpn0.0.1", chacha20poly1305.KeySize)
+	infoString, ok := ctx.Value("version").(string)
+	if !ok {
+		log.Fatalln("Missing ownvpn version key in context")
+	}
+
+	encryption_key, err := hkdf.Key(sha256.New, final_key, nil, infoString, chacha20poly1305.KeySize)
 	if err != nil {
 		log.Println("Failed to derive encryption key: " + err.Error())
 		return
