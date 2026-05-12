@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/mlkem"
 	"crypto/rand"
-	"encoding/json"
 	"fmt"
 	"log"
 	"net"
@@ -13,7 +12,6 @@ import (
 	"github.com/lbodlev888/ownvpn/config"
 	"github.com/lbodlev888/ownvpn/crypto"
 	"github.com/lbodlev888/ownvpn/models"
-	"github.com/lbodlev888/ownvpn/network"
 	"github.com/lbodlev888/ownvpn/proto"
 	"github.com/lbodlev888/ownvpn/tunif"
 	"github.com/songgao/water"
@@ -21,17 +19,19 @@ import (
 )
 
 const (
-	BUFFERSIZE = 1500
+	BUFFERSIZE = 2048
 )
 
 var (
-	peersMu sync.RWMutex
-	peers = make(map[string]models.Peer)
+	peersMu      sync.RWMutex
+	peersByIP    = make(map[string]*models.Peer)
+	peersByAddr  = make(map[string]*models.Peer)
 	allowedPeers map[string]config.PeerConfig
-	wg sync.WaitGroup
-	virtualIP string
-	decapsKey *mlkem.DecapsulationKey768
-	iface *water.Interface
+	wg           sync.WaitGroup
+	virtualIP    string
+	decapsKey    *mlkem.DecapsulationKey768
+	iface        *water.Interface
+	udpConn      *net.UDPConn
 )
 
 func RunServer(ctx context.Context, cfg *config.ServerConfig, stop context.CancelFunc) {
@@ -53,136 +53,89 @@ func RunServer(ctx context.Context, cfg *config.ServerConfig, stop context.Cance
 		log.Fatalln("Could not create tun interface: " + err.Error())
 	}
 
-	listener, err := net.Listen("tcp", cfg.BindAddress)
+	udpAddr, err := net.ResolveUDPAddr("udp", cfg.BindAddress)
 	if err != nil {
-		log.Fatalln("Could not bind address: " + err.Error())
+		log.Fatalln("Could not resolve bind address: " + err.Error())
 	}
-	defer listener.Close()
 
-	log.Printf("Server listening on %s (VPN IP: %s/%d)", cfg.BindAddress, cfg.VirtualIP, cfg.Subnet)
+	udpConn, err = net.ListenUDP("udp", udpAddr)
+	if err != nil {
+		log.Fatalln("Could not bind UDP socket: " + err.Error())
+	}
+	defer udpConn.Close()
 
-	wg.Go(func() { acceptPeers(ctx, listener) })
-	wg.Go(func() { processLocalIface(iface) })
+	log.Printf("Server listening on %s (UDP, VPN IP: %s/%d)", cfg.BindAddress, cfg.VirtualIP, cfg.Subnet)
 
-	wg.Go(func(){
+	wg.Go(func() { readFromPeers(ctx) })
+	wg.Go(func() { readFromIface(ctx) })
+
+	wg.Go(func() {
 		<-ctx.Done()
 		iface.Close()
-		listener.Close()
-
-		peersMu.RLock()
-		for _, p := range peers {
-			p.Conn.Close()
-		}
-		peersMu.RUnlock()
+		udpConn.Close()
 	})
 
 	wg.Wait()
 }
 
-func acceptPeers(ctx context.Context, l net.Listener) {
+func readFromPeers(ctx context.Context) {
+	buf := make([]byte, BUFFERSIZE)
 	for {
-		client, err := l.Accept()
+		n, src, err := udpConn.ReadFromUDP(buf)
 		if err != nil {
 			if ctx.Err() != nil {
-				break
+				return
 			}
-			log.Println("Failed to accept client: " + err.Error())
+			log.Println("Failed to read UDP datagram: " + err.Error())
 			continue
 		}
-		wg.Go(func() { handleClient(ctx, client) })
-	}
-}
-
-func processLocalIface(iface *water.Interface) {
-	packet := make([]byte, BUFFERSIZE)
-	nonce := make([]byte, chacha20poly1305.NonceSize)
-
-	for {
-		n, err := iface.Read(packet)
-		if err != nil {
-			log.Println("Failed to read from iface:" + err.Error())
-			return
-		}
-		actualData := packet[:n]
-
-		if len(actualData) < 20 {
-			continue //invalid IPv4 packet
-		}
-
-		if actualData[0] >> 4 != 4 {
-			continue //invalid or IPv6, currently handling only IPv4
-		}
-
-		dstIP := net.IP(actualData[16:20]).String()
-		peersMu.RLock()
-		peer, ok := peers[dstIP]
-		peersMu.RUnlock()
-		if !ok {
+		if n < 1 {
 			continue
 		}
 
-		cipher, err := chacha20poly1305.New(peer.SessionKey)
-		if err != nil {
-			log.Println("Failed to init cipher: " + err.Error())
-			break
+		pkt := buf[:n]
+		switch pkt[0] {
+		case proto.MsgClientHello:
+			handleHandshake(ctx, pkt, src)
+		case proto.MsgData:
+			handleData(pkt[1:], src)
 		}
-
-		rand.Read(nonce)
-		enc_frame := cipher.Seal(nil, nonce, actualData, nil)
-		final_packet := append(nonce, enc_frame...)
-		network.WriteFrame(peer.Conn, final_packet)
 	}
 }
 
-func handleClient(ctx context.Context, conn net.Conn) {
-	defer conn.Close()
-	enc := json.NewEncoder(conn)
-	dec := json.NewDecoder(conn)
-
-	var clientHello proto.ClientHello
-	if err := dec.Decode(&clientHello); err != nil {
-		log.Println("Could not read clientHello: " + err.Error())
+func handleHandshake(ctx context.Context, pkt []byte, src *net.UDPAddr) {
+	clientHello, err := proto.DecodeClientHello(pkt)
+	if err != nil {
+		log.Println("Invalid ClientHello: " + err.Error())
 		return
 	}
 
 	peerCfg, ok := allowedPeers[clientHello.Name]
 	if !ok {
-		log.Println("Invalid peer. Dropping connection")
-		return
-	}
-
-	peersMu.RLock()
-	_, exists := peers[peerCfg.VirtualIP]
-	peersMu.RUnlock()
-	if exists {
-		log.Println("Peer already connected. Dropping the connection")
+		log.Printf("Unknown peer %q from %s. Dropping\n", clientHello.Name, src)
 		return
 	}
 
 	encaps, err := crypto.ParseEncapsKey(peerCfg.EncapsKey)
 	if err != nil {
-		log.Fatalf("Could not import public key of peer %s: %v\n", peerCfg.Name, err)
+		log.Printf("Could not import public key of peer %s: %v\n", peerCfg.Name, err)
+		return
 	}
 
 	sharedKey2, ciphertext := encaps.Encapsulate()
 
-	if err := enc.Encode(proto.ServerHello{
-		PublicData: ciphertext,
-	}); err != nil {
-		log.Println("Failed to send serverHello: " + err.Error())
-		return
-	}
-
 	sharedKey1, err := decapsKey.Decapsulate(clientHello.PublicData)
 	if err != nil {
-		log.Printf("Could not decrypt clientHello from %s: %v\n", peerCfg.Name, err)
+		log.Printf("Could not decapsulate ClientHello from %s: %v\n", peerCfg.Name, err)
+		return
 	}
 
 	final_key := append(sharedKey1, sharedKey2...)
 
 	infoString, ok := ctx.Value("version").(string)
 	if !ok {
-		log.Fatalln("Missing ownvpn version key in context")
+		log.Println("Missing ownvpn version key in context")
+		return
 	}
 
 	encryption_key, err := crypto.DeriveEncryptionKey(final_key, nil, infoString, chacha20poly1305.KeySize)
@@ -191,78 +144,128 @@ func handleClient(ctx context.Context, conn net.Conn) {
 		return
 	}
 
-	peer := models.Peer{
-		Conn: conn,
-		VirtualIP: net.ParseIP(peerCfg.VirtualIP),
+	serverHelloBytes, err := proto.EncodeServerHello(proto.ServerHello{PublicData: ciphertext})
+	if err != nil {
+		log.Println("Failed to encode ServerHello: " + err.Error())
+		return
+	}
+
+	if _, err := udpConn.WriteToUDP(serverHelloBytes, src); err != nil {
+		log.Println("Failed to send ServerHello: " + err.Error())
+		return
+	}
+
+	peer := &models.Peer{
+		Addr:       src,
+		VirtualIP:  net.ParseIP(peerCfg.VirtualIP),
 		SessionKey: encryption_key,
 	}
 
 	peersMu.Lock()
-	peers[peerCfg.VirtualIP] = peer
+	if old, ok := peersByIP[peerCfg.VirtualIP]; ok {
+		delete(peersByAddr, old.Addr.String())
+		log.Printf("Replacing existing session for %s (%s -> %s)\n", peerCfg.Name, old.Addr, src)
+	}
+	peersByIP[peerCfg.VirtualIP] = peer
+	peersByAddr[src.String()] = peer
 	peersMu.Unlock()
 
-	log.Printf("Peer connected: %s -> %s\n", peerCfg.Name, peerCfg.VirtualIP)
-
-	handleFrames(peer)
-
-	log.Printf("Peer disconnected: %s -> %s\n", peerCfg.Name, peerCfg.VirtualIP)
-	peersMu.Lock()
-	delete(peers, peerCfg.VirtualIP)
-	peersMu.Unlock()
+	log.Printf("Peer connected: %s -> %s (from %s)\n", peerCfg.Name, peerCfg.VirtualIP, src)
 }
 
-func handleFrames(peer models.Peer) {
-	readCipher, err := chacha20poly1305.New(peer.SessionKey)
+func handleData(payload []byte, src *net.UDPAddr) {
+	peersMu.RLock()
+	peer, ok := peersByAddr[src.String()]
+	peersMu.RUnlock()
+	if !ok {
+		// unknown source; ignore (could be stale or spoofed)
+		return
+	}
+
+	if len(payload) < chacha20poly1305.NonceSize {
+		return
+	}
+
+	cipher, err := chacha20poly1305.New(peer.SessionKey)
 	if err != nil {
 		log.Println("Failed to init cipher: " + err.Error())
 		return
 	}
 
+	nonce := payload[:chacha20poly1305.NonceSize]
+	ciphertext := payload[chacha20poly1305.NonceSize:]
+
+	frame, err := cipher.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		log.Printf("Failed to decrypt frame from %s: %v\n", src.String(), err.Error())
+		return
+	}
+
+	if len(frame) < 20 || frame[0] >> 4 != 4 {
+		return
+	}
+
+	dstIP := net.IP(frame[16:20]).String()
+	if virtualIP == dstIP {
+		iface.Write(frame)
+		return
+	}
+
+	peersMu.RLock()
+	dstPeer, ok := peersByIP[dstIP]
+	peersMu.RUnlock()
+	if !ok {
+		return
+	}
+
+	sendEncrypted(dstPeer, frame)
+}
+
+func readFromIface(ctx context.Context) {
+	packet := make([]byte, BUFFERSIZE)
 	for {
-		encrypted_frame, err := network.ReadFrame(peer.Conn)
+		n, err := iface.Read(packet)
 		if err != nil {
-			log.Printf("Failed to read from peer %s with error %v: ", peer.VirtualIP, err)
+			if ctx.Err() != nil {
+				return
+			}
+			log.Println("Failed to read from iface: " + err.Error())
 			return
 		}
+		actualData := packet[:n]
 
-		nonce := encrypted_frame[:chacha20poly1305.NonceSize]
-		encrypted_frame = encrypted_frame[chacha20poly1305.NonceSize:]
-
-		frame, err := readCipher.Open(nil, nonce, encrypted_frame, nil)
-		if err != nil {
-			log.Println("Failed to decrypt: " + err.Error())
+		if len(actualData) < 20 || actualData[0] >> 4 != 4 {
 			continue
 		}
 
-		if len(frame) < 20 {
-			continue //invalid IPv4 packet
-		}
-		
-		if frame[0] >> 4 != 4 {
-			continue //invalid or IPv6 packet, currently handling only IPv4
-		}
-
-		dstIP := net.IP(frame[16:20]).String()
-		if virtualIP == dstIP {
-			iface.Write(frame)
-			continue
-		}
+		dstIP := net.IP(actualData[16:20]).String()
 		peersMu.RLock()
-		peer, ok := peers[dstIP]
+		peer, ok := peersByIP[dstIP]
 		peersMu.RUnlock()
 		if !ok {
 			continue
 		}
-		cipher, err := chacha20poly1305.New(peer.SessionKey)
-		if err != nil {
-			log.Println("Failed to init cipher: " + err.Error())
-			break
-		}
 
-		clear(nonce)
-		rand.Read(nonce)
-		new_encframe := cipher.Seal(nil, nonce, frame, nil)
-		final_packet := append(nonce, new_encframe...)
-		network.WriteFrame(peer.Conn, final_packet)
+		sendEncrypted(peer, actualData)
+	}
+}
+
+func sendEncrypted(peer *models.Peer, frame []byte) {
+	cipher, err := chacha20poly1305.New(peer.SessionKey)
+	if err != nil {
+		log.Println("Failed to init cipher: " + err.Error())
+		return
+	}
+
+	nonce := make([]byte, chacha20poly1305.NonceSize)
+	rand.Read(nonce)
+
+	out := make([]byte, 0, 1+len(nonce)+len(frame)+chacha20poly1305.Overhead)
+	out = append(out, proto.MsgData)
+	out = append(out, nonce...)
+	out = cipher.Seal(out, nonce, frame, nil)
+
+	if _, err := udpConn.WriteToUDP(out, peer.Addr); err != nil {
+		log.Println("Failed to send to peer " + peer.Addr.String() + ": " + err.Error())
 	}
 }
