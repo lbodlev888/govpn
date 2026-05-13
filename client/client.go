@@ -2,118 +2,192 @@ package client
 
 import (
 	"context"
+	"crypto/cipher"
 	"crypto/rand"
-	"encoding/json"
 	"fmt"
 	"log"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/lbodlev888/ownvpn/config"
 	"github.com/lbodlev888/ownvpn/crypto"
-	"github.com/lbodlev888/ownvpn/network"
 	"github.com/lbodlev888/ownvpn/proto"
 	"github.com/lbodlev888/ownvpn/tunif"
 	"golang.org/x/crypto/chacha20poly1305"
 )
 
 const (
-	BUFFERSIZE = 1500
+	BUFFERSIZE = 2048
+	HANDSHAKE_TIMEOUT = 3 * time.Minute
 )
 
-func RunClient(ctx context.Context, cfg *config.PeerConfig, cancel context.CancelFunc) {
+func RunClient(ctx context.Context, cfg *config.PeerConfig) {
+	var aead cipher.AEAD
+	cipherChan := make(chan struct{})
+	encryptionKey := make([]byte, chacha20poly1305.KeySize)
+
 	if cfg.Endpoint == "" {
 		log.Fatalln("Missing endpoint. Cant connect to nobody")
-		return
 	}
 
 	iface, err := tunif.SetupInterface(fmt.Sprintf("%s/%d", cfg.VirtualIP, cfg.Subnet))
-	if err != nil { log.Fatalln("Could not create tun interface: " + err.Error()) }
+	if err != nil {
+		log.Fatalln("Could not create tun interface: " + err.Error())
+	}
 
 	decaps, err := crypto.ParseDecapsKey(cfg.DecapsKey)
-	if err != nil { log.Fatalln("Could not import private key: " + err.Error()) }
+	if err != nil {
+		log.Fatalln("Could not import private key: " + err.Error())
+	}
 
 	encaps, err := crypto.ParseEncapsKey(cfg.EncapsKey)
-	if err != nil { log.Fatalln("Could not import public key: " + err.Error()) }
-
-	sharedKey1, ciphertext := encaps.Encapsulate()
-
-	conn, err := net.Dial("tcp", cfg.Endpoint)
 	if err != nil {
-		log.Println("Failed to connect to server: " + err.Error())
-		return
+		log.Fatalln("Could not import public key: " + err.Error())
+	}
+
+	serverAddr, err := net.ResolveUDPAddr("udp", cfg.Endpoint)
+	if err != nil {
+		log.Fatalln("Could not resolve endpoint: " + err.Error())
+	}
+
+	lAddr, _ := net.ResolveUDPAddr("udp", "0.0.0.0:0")
+	conn, err := net.ListenUDP("udp", lAddr)
+	if err != nil {
+		log.Fatalln("Failed to connect to server: " + err.Error())
 	}
 	defer conn.Close()
 
-	enc := json.NewEncoder(conn)
-	dec := json.NewDecoder(conn)
-
 	log.Println("Peer name: " + cfg.Name)
-	if err := enc.Encode(proto.ClientHello{
-		PublicData: ciphertext,
-		Name: cfg.Name,
-	}); err != nil {
-		log.Fatalln("Failed to send clientHello: " + err.Error())
-		return
-	}
-
-	var serverHello proto.ServerHello
-	if err := dec.Decode(&serverHello); err != nil {
-		log.Fatalln("Failed to decode serverHello: " + err.Error())
-		return
-	}
-
-	sharedKey2, err := decaps.Decapsulate(serverHello.PublicData)
-	if err != nil {
-		log.Fatalln("Could not decrypt public data from serverHello: " + err.Error())
-	}
-
-	final_key := append(sharedKey1, sharedKey2...)
-
-	infoString, ok := ctx.Value("version").(string)
-	if !ok {
-		log.Fatalln("Missing ownvpn version key in context")
-	}
-
-	encryptionKey, err := crypto.DeriveEncryptionKey(final_key, nil, infoString, chacha20poly1305.KeySize)
-	if err != nil {
-		log.Println("Coult not derive encryption key: " + err.Error())
-		return
-	}
-
-	log.Println("Connection established")
-
-	cipher, err := chacha20poly1305.New(encryptionKey)
-	if err != nil {
-		log.Println("Could not init symmetric cipher: " + err.Error())
-		return
-	}
 
 	var wg sync.WaitGroup
 
 	wg.Go(func() {
+		for {
+			if ctx.Err() != nil {
+				log.Println("Handshake process stopped")
+				return
+			}
+
+			aead = nil
+			log.Println("Re-handshaking...")
+
+			sharedKey1, ciphertext := encaps.Encapsulate()
+
+			clientHelloBytes, err := proto.EncodeClientHello(proto.ClientHello{
+				Name:       cfg.Name,
+				PublicData: ciphertext,
+			})
+			if err != nil {
+				log.Println("Failed to encode ClientHello: " + err.Error())
+				continue
+			}
+		
+			if _, err := conn.WriteTo(clientHelloBytes, serverAddr); err != nil {
+				log.Println("Failed to send ClientHello: " + err.Error())
+				<-time.After(5 * time.Second)
+				continue
+			}
+		
+			respBuf := make([]byte, BUFFERSIZE)
+			conn.SetReadDeadline(time.Now().Add(1 * time.Second))
+			n, src, err := conn.ReadFrom(respBuf)
+			if err != nil {
+				log.Println("Failed to read ServerHello: " + err.Error())
+				continue
+			}
+			conn.SetReadDeadline(time.Time{})
+			if src.String() != serverAddr.String() {
+				continue
+			}
+		
+			serverHello, err := proto.DecodeServerHello(respBuf[:n])
+			if err != nil {
+				log.Println("Invalid ServerHello: " + err.Error())
+				continue
+			}
+		
+			sharedKey2, err := decaps.Decapsulate(serverHello.PublicData)
+			if err != nil {
+				log.Println("Could not decapsulate ServerHello: " + err.Error())
+				continue
+			}
+		
+			final_key := append(sharedKey1, sharedKey2...)
+		
+			infoString, ok := ctx.Value("version").(string)
+			if !ok {
+				log.Fatalln("Missing ownvpn version key in context")
+			}
+		
+			encryptionKey, err = crypto.DeriveEncryptionKey(final_key, nil, infoString, chacha20poly1305.KeySize)
+			if err != nil {
+				log.Println("Could not derive encryption key: " + err.Error())
+				continue
+			}
+		
+			log.Println("Latest handshake " + time.Now().Format(time.RFC1123))
+			aead, err = chacha20poly1305.New(encryptionKey)
+			if err != nil {
+				log.Println("Failed to init cipher: " + err.Error())
+				continue
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(HANDSHAKE_TIMEOUT): //re-establish encrypted connection
+			case <-cipherChan:
+			}
+		}
+	})
+
+	wg.Go(func() {
 		<-ctx.Done()
-		log.Println("Received stop signal. Clossing everything")
+		log.Println("Received stop signal. Closing everything")
 		conn.Close()
 		iface.Close()
 	})
 
-	wg.Go(func(){
+	wg.Go(func() {
+		buf := make([]byte, BUFFERSIZE)
 		for {
-			enc_frame, err := network.ReadFrame(conn)
-			if err != nil {
-				if ctx.Err() != nil { return }
-
-				log.Println("Failed to read: " + err.Error())
-				return
+			if ctx.Err() != nil {
+				break
+			} else if aead == nil {
+				<-time.After(100 * time.Millisecond)
+				continue
 			}
 
-			nonce := enc_frame[:chacha20poly1305.NonceSize]
-			enc_frame = enc_frame[chacha20poly1305.NonceSize:]
+			n, src, err := conn.ReadFrom(buf)
+			if err != nil {
+				log.Println("Failed to read from server: " + err.Error())
+				continue
+			}
 
-			frame, err := cipher.Open(nil, nonce, enc_frame, nil)
+			if src.String() != serverAddr.String() {
+				continue
+			}
+
+			if aead == nil {
+				continue
+			}
+
+			if n < 1 || buf[0] != proto.MsgData {
+				continue
+			}
+			payload := buf[1:n]
+			if len(payload) < chacha20poly1305.NonceSize {
+				continue
+			}
+
+			nonce := payload[:chacha20poly1305.NonceSize]
+			ciphertext := payload[chacha20poly1305.NonceSize:]
+
+			frame, err := aead.Open(nil, nonce, ciphertext, nil)
 			if err != nil {
 				log.Println("Invalid encrypted frame: " + err.Error())
+				aead = nil
+				cipherChan <- struct{}{}
 				continue
 			}
 
@@ -123,23 +197,37 @@ func RunClient(ctx context.Context, cfg *config.PeerConfig, cancel context.Cance
 
 	packet := make([]byte, BUFFERSIZE)
 	for {
+		if ctx.Err() != nil {
+			break
+		} else if aead == nil {
+			<-time.After(100 * time.Millisecond)
+			continue
+		}
+
 		plen, err := iface.Read(packet)
 		if err != nil {
-			if ctx.Err() != nil { break }
+			log.Println("Failed to read from iface: " + err.Error())
+			continue
+		}
 
-			log.Println("Failed to read: " + err.Error())
-			break
+		if aead == nil {
+			continue
 		}
 
 		nonce := make([]byte, chacha20poly1305.NonceSize)
 		rand.Read(nonce)
-		enc_data := cipher.Seal(nil, nonce, packet[:plen], nil)
-		final_packet := append(nonce, enc_data...)
 
-		if err := network.WriteFrame(conn, final_packet); err != nil {
+		out := make([]byte, 0, 1 + len(nonce) + plen + chacha20poly1305.Overhead)
+		out = append(out, proto.MsgData)
+		out = append(out, nonce...)
+
+		out = aead.Seal(out, nonce, packet[:plen], nil)
+
+		if _, err := conn.WriteTo(out, serverAddr); err != nil {
 			log.Println("Failed to write packet: " + err.Error())
-			cancel()
-			break
+			aead = nil
+			cipherChan <- struct{}{}
+			continue
 		}
 	}
 

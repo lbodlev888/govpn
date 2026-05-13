@@ -26,7 +26,7 @@ func main() {
 	flag.Parse()
 
 	if *generateKeys {
-		crypto.GenerateCrypto()
+		crypto.GeneratePrivate()
 		return
 	}
 
@@ -62,6 +62,6 @@ func main() {
 			log.Fatalln("Could not parse peer configuration file: " + err.Error())
 		}
 
-		client.RunClient(ctx, &cfg, cancel)
+		client.RunClient(ctx, &cfg)
 	}
 }
