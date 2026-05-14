@@ -186,8 +186,6 @@ func RunClient(ctx context.Context, cfg *config.PeerConfig) {
 			frame, err := aead.Open(nil, nonce, ciphertext, nil)
 			if err != nil {
 				log.Println("Invalid encrypted frame: " + err.Error())
-				aead = nil
-				cipherChan <- struct{}{}
 				continue
 			}
 
