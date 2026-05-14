@@ -230,7 +230,7 @@ func readFromIface(ctx context.Context) {
 				return
 			}
 			log.Println("Failed to read from iface: " + err.Error())
-			return
+			continue
 		}
 		actualData := packet[:n]
 
