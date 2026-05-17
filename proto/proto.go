@@ -1,13 +1,18 @@
 package proto
 
 import (
+	"crypto/rand"
 	"fmt"
 )
 
 const (
-	MsgClientHello byte = 0x01
-	MsgServerHello byte = 0x02
-	MsgData        byte = 0x03
+	MsgClientHello  byte = 0x01
+	MsgServerHello  byte = 0x02
+	MsgData         byte = 0x03
+	MsgKeepAlive    byte = 0x04
+
+	MsgKeepAliveSYN byte = 0x05
+	MsgKeepAliveACK byte = 0x06
 
 	// ML-KEM-768 ciphertext length (fixed).
 	MLKEM768CiphertextLen = 1088
@@ -22,6 +27,22 @@ type ClientHello struct {
 
 type ServerHello struct {
 	PublicData []byte
+}
+
+func EncodeKeepAlive(flag byte) []byte {
+	buf := make([]byte, 5)
+	buf[0] = MsgKeepAlive
+	buf[1] = flag
+	rand.Read(buf[2:])
+
+	return buf
+}
+
+func DecodeKeepAlive(buf []byte, expected_flag byte) bool {
+	if len(buf) != 5 || buf[0] != MsgKeepAlive {
+		return false
+	}
+	return buf[1] == expected_flag
 }
 
 func EncodeClientHello(h ClientHello) ([]byte, error) {
