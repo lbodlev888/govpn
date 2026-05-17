@@ -99,6 +99,18 @@ func readFromPeers(ctx context.Context) {
 			handleHandshake(ctx, pkt, src)
 		case proto.MsgData:
 			handleData(pkt[1:], src)
+		case proto.MsgKeepAlive:
+			sendAckKeepAlive(pkt, src)
+		default:
+			log.Printf("Invalid packet from %s\n", net.IP(src.IP).String())
+		}
+	}
+}
+
+func sendAckKeepAlive(pkt []byte, src *net.UDPAddr) {
+	if proto.DecodeKeepAlive(pkt, proto.MsgKeepAliveSYN) {
+		if _, err := udpConn.WriteToUDP(proto.EncodeKeepAlive(proto.MsgKeepAliveACK), src); err != nil {
+			log.Println("Failed to send keepalive syn:" + err.Error())
 		}
 	}
 }
@@ -230,7 +242,7 @@ func readFromIface(ctx context.Context) {
 				return
 			}
 			log.Println("Failed to read from iface: " + err.Error())
-			return
+			continue
 		}
 		actualData := packet[:n]
 

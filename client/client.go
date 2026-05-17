@@ -148,6 +148,28 @@ func RunClient(ctx context.Context, cfg *config.PeerConfig) {
 		iface.Close()
 	})
 
+	//keepalive process
+	wg.Go(func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(25 * time.Second):
+			}
+
+			//even if here we do not encrypt we dont need to send keepalives if session isnt initiated
+			if aead == nil {
+				continue
+			}
+
+			keepaliveBytes := proto.EncodeKeepAlive(proto.MsgKeepAliveSYN)
+			_, err := conn.WriteTo(keepaliveBytes, serverAddr)
+			if err != nil {
+				log.Println("Failed to send keepalive: " + err.Error())
+			}
+		}
+	})
+
 	wg.Go(func() {
 		buf := make([]byte, BUFFERSIZE)
 		for {
@@ -164,17 +186,19 @@ func RunClient(ctx context.Context, cfg *config.PeerConfig) {
 				continue
 			}
 
-			if src.String() != serverAddr.String() {
+			if aead == nil || n < 1 || src.String() != serverAddr.String() {
 				continue
 			}
 
-			if aead == nil {
+			if buf[0] == proto.MsgKeepAlive {
+				log.Printf("Received keepalive. Status: %t\n", proto.DecodeKeepAlive(buf[:n], proto.MsgKeepAliveACK))
 				continue
 			}
 
-			if n < 1 || buf[0] != proto.MsgData {
+			if buf[0] != proto.MsgData {
 				continue
 			}
+
 			payload := buf[1:n]
 			if len(payload) < chacha20poly1305.NonceSize {
 				continue
