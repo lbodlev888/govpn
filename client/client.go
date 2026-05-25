@@ -19,7 +19,7 @@ import (
 
 const (
 	BUFFERSIZE = 2048
-	HANDSHAKE_TIMEOUT = 3 * time.Minute
+	HANDSHAKE_TIMEOUT = 5 * time.Minute
 )
 
 func RunClient(ctx context.Context, cfg *config.PeerConfig) {
@@ -191,7 +191,12 @@ func RunClient(ctx context.Context, cfg *config.PeerConfig) {
 			}
 
 			if buf[0] == proto.MsgKeepAlive {
-				log.Printf("Received keepalive. Status: %t\n", proto.DecodeKeepAlive(buf[:n], proto.MsgKeepAliveACK))
+				keepaliveStatus := proto.DecodeKeepAlive(buf[:n], proto.MsgKeepAliveACK)
+				log.Printf("Received keepalive. Status: %t\n", keepaliveStatus)
+				if !keepaliveStatus {
+					aead = nil
+					cipherChan <- struct{}{}
+				}
 				continue
 			}
 
