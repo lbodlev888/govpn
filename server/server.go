@@ -112,7 +112,9 @@ func sendAckKeepAlive(pkt []byte, src *net.UDPAddr) {
 		if _, err := udpConn.WriteToUDP(proto.EncodeKeepAlive(proto.MsgKeepAliveACK), src); err != nil {
 			log.Println("Failed to send keepalive syn:" + err.Error())
 		}
+		return
 	}
+	log.Println("Received invalid keepalive from: " + src.String())
 }
 
 func handleHandshake(ctx context.Context, pkt []byte, src *net.UDPAddr) {
