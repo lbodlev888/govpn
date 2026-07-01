@@ -229,6 +229,7 @@ func handleData(payload []byte, src *net.UDPAddr) {
 	dstPeer, ok := peersByIP[dstIP]
 	peersMu.RUnlock()
 	if !ok {
+		iface.Write(frame)
 		return
 	}
 
