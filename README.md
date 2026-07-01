@@ -5,8 +5,7 @@ central hub server; all traffic is authenticated and encrypted with keys derived
 ML-KEM-768 (FIPS 203) handshake. There is no classical key-exchange fallback — the
 whole construction is post-quantum.
 
-The codebase is intentionally small (one file per package) so it can be ported to other
-platforms. This README documents the wire protocol and handshake precisely enough that
+This README documents the wire protocol and handshake precisely enough that
 a client can be re-implemented from scratch in any other language for any other platform.
 
 ---
@@ -23,10 +22,15 @@ a client can be re-implemented from scratch in any other language for any other 
   with a per-packet random 12-byte nonce. Tag length is 16 bytes (Poly1305 default).
 - **HKDF key derivation.** Session key derived with HKDF-SHA256 from the concatenation
   of both shared secrets, salted with `nil` and using the protocol version string
-  (e.g. `ownvpn0.0.3`) as the `info` parameter.
+  (e.g. `ownvpn0.0.4`) as the `info` parameter.
 - **Hub topology with IP-based routing.** The server inspects the destination IPv4
   address of the decrypted inner packet and either delivers it to its own TUN interface
-  or re-encrypts and forwards it to the matching peer.
+  or re-encrypts and forwards it to the matching peer. Packets addressed to something
+  that is neither the server nor a known peer are handed to the server's TUN device, so
+  with host-side NAT the server can act as an internet gateway (see **Full tunnel**).
+- **Optional full tunnel.** A client started with `-full-tunnel` automatically routes
+  the machine's *entire* network traffic through the encrypted tunnel and restores the
+  original routing table on exit — no manual `ip route` juggling required.
 - **Automatic re-handshake.** The client renegotiates the session key every 3 minutes,
   and immediately whenever encryption or decryption fails (so a corrupted/replayed
   packet does not poison the cipher state).
@@ -77,7 +81,7 @@ Constants:
 - ML-KEM-768 shared secret is **32 bytes**.
 - ChaCha20-Poly1305: **32-byte key**, **12-byte nonce**, **16-byte tag**.
 - HKDF salt: empty (nil). HKDF info string: the protocol version, currently
-  `"ownvpn0.0.3"` (literal ASCII, no trailing newline). Output length: 32 bytes.
+  `"ownvpn0.0.4"` (literal ASCII, no trailing newline). Output length: 32 bytes.
 
 ### ClientHello (0x01)
 
@@ -149,7 +153,7 @@ ciphertext. `Decaps(DK, ct) -> ss` recovers the same 32-byte shared secret.
 3. Computes `ss1 = Decaps(DK_server, ct1)` — this is the same 32-byte secret the client
    has. Failure here means the client used the wrong server public key.
 4. Computes `Encaps(EK_client) -> (ss2, ct2)`.
-5. Derives `K = HKDF-SHA256(ikm = ss1 || ss2, salt = nil, info = "ownvpn0.0.3", L = 32)`.
+5. Derives `K = HKDF-SHA256(ikm = ss1 || ss2, salt = nil, info = "ownvpn0.0.4", L = 32)`.
 6. Stores the peer keyed by both its UDP source address (for the data path) and its
    configured virtual IP (for the routing table). Any previous session for the same
    virtual IP is evicted.
@@ -163,7 +167,7 @@ ciphertext. `Decaps(DK, ct) -> ss` recovers the same 32-byte shared secret.
 2. Verifies the source address matches the expected server endpoint.
 3. Decodes `ServerHello`, then computes `ss2 = Decaps(DK_client, ct2)`. Failure here
    means the server used the wrong client public key.
-4. Derives the **same** `K = HKDF-SHA256(ss1 || ss2, nil, "ownvpn0.0.3", 32)`.
+4. Derives the **same** `K = HKDF-SHA256(ss1 || ss2, nil, "ownvpn0.0.4", 32)`.
 5. Initializes ChaCha20-Poly1305 with `K`. Tunnel is now ready.
 
 ### Authentication property
@@ -212,7 +216,7 @@ loop {
     ss2 = MLKEM768.decaps(DK_client, ct2)
 
     ikm = ss1 || ss2                                          // 64 B
-    K   = HKDF_SHA256(ikm, salt=null, info="ownvpn0.0.3", 32) // 32 B
+    K   = HKDF_SHA256(ikm, salt=null, info="ownvpn0.0.4", 32) // 32 B
     aead = ChaCha20Poly1305(K)
     handshake_done = true
     wait(min(180 s, until cipher_failure))
@@ -273,7 +277,95 @@ A few platform notes for Android:
 The server looks at bytes 16..19 of every decrypted inner packet (the IPv4 destination
 address). If it equals the server's own virtual IP it is written to the local TUN; if
 it matches a known peer's virtual IP it is re-sealed under that peer's session key and
-sent to that peer's UDP address. Non-IPv4 packets (`version != 4`) are dropped.
+sent to that peer's UDP address. If it matches **neither**, the packet is written to the
+server's TUN device (see **Full tunnel** below) instead of being dropped. Non-IPv4
+packets (`version != 4`) are dropped.
+
+---
+
+## Full tunnel
+
+By default ownvpn is a point-to-point / hub overlay: only traffic addressed to a
+`virtual_ip` on the tunnel subnet actually crosses the tunnel; everything else uses the
+host's normal routes. **Full tunnel** mode turns the server into a default gateway so
+that *all* of a client's traffic is encrypted and egresses through the server — the same
+thing a commercial "VPN" gives you (hidden origin IP, encrypted transit on the local
+network, etc.).
+
+Enable it on the client with the `-full-tunnel` flag:
+
+```sh
+sudo ./ownvpn -config peer.json -full-tunnel
+```
+
+### How the client side works
+
+When `-full-tunnel` is set, immediately after the TUN device is created the client
+reprograms the host routing table (all via the `ip` command in the `tunif` package):
+
+1. **Capture all traffic.** It adds two routes, `0.0.0.0/1` and `128.0.0.0/1`, pointing
+   at the ownvpn TUN device. Together these two `/1` routes cover the whole IPv4 address
+   space, and because they are *more specific* than the existing `0.0.0.0/0` default
+   route they win for every destination — without deleting the original default route, so
+   it can be restored cleanly later.
+2. **Keep the tunnel itself reachable.** If we routed *everything* into the tunnel, the
+   encrypted UDP packets going to the server would themselves be routed back into the
+   tunnel — a loop. To avoid this the client discovers the machine's current physical
+   default gateway (via the `jackpal/gateway` library) and pins a host route to the VPN
+   **server's endpoint IP** through that real gateway, so the outer VPN packets keep
+   using the physical link.
+3. **Clean up on exit.** The three routes above are torn down by `ClearFullTunnel`,
+   registered with `defer`, so on Ctrl-C / `SIGTERM` the original routing table is
+   restored. If the process is killed hard (`SIGKILL`, power loss) the routes survive and
+   must be removed manually (`ip route del 0.0.0.0/1`, `ip route del 128.0.0.0/1`, and the
+   host route to the endpoint).
+
+The endpoint IP used for the host route is taken from the `endpoint` in the peer config,
+with the `:port` stripped (`strings.Split(cfg.Endpoint, ":")[0]`). This assumes a literal
+IPv4 endpoint — a DNS hostname is not resolved here.
+
+### How the server side works
+
+Nothing needs to be enabled on the server *in ownvpn itself*: when the server decrypts a
+packet whose destination is neither its own virtual IP nor a known peer, it writes the
+packet to its TUN device and lets the host kernel route it. For that to reach the
+internet and come back, the **server's host** must be configured as a router:
+
+```sh
+# 1. Allow the kernel to forward packets between interfaces
+sudo sysctl -w net.ipv4.ip_forward=1
+
+# 2. NAT/masquerade tunnel traffic out of the physical interface
+#    (replace 10.20.0.0/24 with your tunnel subnet and eth0 with the WAN NIC)
+sudo iptables -t nat -A POSTROUTING -s 10.20.0.0/24 -o eth0 -j MASQUERADE
+```
+
+With those in place the round-trip is:
+
+```
+client TUN ──► [encrypt] ──► server ──► [decrypt] ──► server TUN ──► kernel
+                                                                       │ SNAT (masquerade)
+                                                                       ▼
+                                                                    internet
+                                                                       │  reply, DNAT back
+                                                                       ▼
+kernel ──► server TUN ──► [lookup client virtual IP] ──► [encrypt] ──► client
+```
+
+The masquerade rule rewrites the client's `virtual_ip` source to the server's public
+address on the way out; the reply is un-NAT'd back to the client's virtual IP, read off
+the server's TUN, matched against `peersByIP`, re-encrypted and sent back to the client.
+
+### Notes and limitations
+
+- Only **IPv4** is tunnelled. IPv6 is not routed into the tunnel, so if the host has
+  working IPv6 it can leak outside the tunnel — disable IPv6 on the client if that
+  matters for your threat model.
+- DNS is not modified. Your resolver requests travel through the tunnel like any other
+  traffic, but the servers you query are unchanged; set DNS separately if you want to
+  avoid your ISP's resolver.
+- Full tunnel is a **client-only flag**; the server serves normal peers and full-tunnel
+  peers at the same time with no extra configuration beyond the host NAT above.
 
 ---
 
@@ -362,3 +454,21 @@ sudo ./ownvpn -config peer.json
 
 Once connected, peers can reach each other over the `virtual_ip` addresses on the
 configured subnet.
+
+To push **all** of the client's traffic through the server (and hide the client's origin
+IP), add `-full-tunnel` and make sure the server host is set up for NAT — see the
+**Full tunnel** section:
+
+```sh
+sudo ./ownvpn -config peer.json -full-tunnel
+```
+
+### Flags
+
+| Flag           | Applies to | Description                                                        |
+|----------------|------------|--------------------------------------------------------------------|
+| `-server`      | both       | Run in server (hub) mode instead of client mode.                   |
+| `-config FILE` | both       | Path to the JSON config (required to run the tunnel).              |
+| `-full-tunnel` | client     | Route the whole machine's traffic through the tunnel.             |
+| `-genkey`      | —          | Generate and print a new ML-KEM-768 private key, then exit.        |
+| `-pubkey KEY`  | —          | Print the public key for the given private key, then exit.         |
