@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 
+	"github.com/jackpal/gateway"
 	"github.com/songgao/water"
 )
 
@@ -12,8 +13,10 @@ const (
 	MTU = "1420"
 )
 
+var gatewayAddr string
+
 func SetupInterface(localAddr string) (*water.Interface, error) {
-	iface, err := water.New(water.Config{DeviceType: water.TUN, PlatformSpecificParams: water.PlatformSpecificParams{Name: "bvpn0"}})
+	iface, err := water.New(water.Config{DeviceType: water.TUN, PlatformSpecificParams: water.PlatformSpecificParams{Name: "bvpn1"}})
 	if err != nil {
 		panic("Failed to init interface:" + err.Error())
 	}
@@ -28,6 +31,33 @@ func SetupInterface(localAddr string) (*water.Interface, error) {
 	if err != nil { return nil, fmt.Errorf("Failed to start: %w", err) }
 
 	return iface, nil
+}
+
+func SetupFullTunnel(endpoint string) error {
+	err := runIP("route", "add", "0.0.0.0/1", "dev", "bvpn0")
+	if err != nil { return err }
+
+	err = runIP("route", "add", "128.0.0.0/1", "dev", "bvpn0")
+	if err != nil { return err }
+
+	ip, err := gateway.DiscoverGateway()
+	if err != nil { return err }
+	gatewayAddr = ip.String()
+
+	err = runIP("route", "add", endpoint, "via", gatewayAddr)
+
+	return err
+}
+
+func ClearFullTunnel(endpoint string) error {
+	err := runIP("route", "delete", "0.0.0.0/1", "dev", "bvpn0")
+	if err != nil { return err }
+
+	err = runIP("route", "delete", "128.0.0.0/1", "dev", "bvpn0")
+	if err != nil { return err }
+
+	err = runIP("route", "delete", endpoint, "via", gatewayAddr)
+	return err
 }
 
 func runIP(args ...string) error {

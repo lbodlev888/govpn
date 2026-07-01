@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -22,39 +23,58 @@ const (
 	HANDSHAKE_TIMEOUT = 5 * time.Minute
 )
 
-func RunClient(ctx context.Context, cfg *config.PeerConfig) {
+func RunClient(ctx context.Context, cfg *config.PeerConfig, runWithFullTunnel bool) {
 	var aead cipher.AEAD
 	cipherChan := make(chan struct{})
 	encryptionKey := make([]byte, chacha20poly1305.KeySize)
 
 	if cfg.Endpoint == "" {
-		log.Fatalln("Missing endpoint. Cant connect to nobody")
+		log.Println("Missing endpoint. Cant connect to nobody")
+		return
 	}
 
 	iface, err := tunif.SetupInterface(fmt.Sprintf("%s/%d", cfg.VirtualIP, cfg.Subnet))
 	if err != nil {
-		log.Fatalln("Could not create tun interface: " + err.Error())
+		log.Println("Could not create tun interface: " + err.Error())
+		return
+	}
+
+	if runWithFullTunnel {
+		defer func() {
+			if err := tunif.ClearFullTunnel(strings.Split(cfg.Endpoint, ":")[0]); err != nil {
+				log.Println(err)
+			}
+		}()
+		err := tunif.SetupFullTunnel(strings.Split(cfg.Endpoint, ":")[0])
+		if err != nil {
+			log.Println("Failed to setup full tunnel")
+			return
+		}
 	}
 
 	decaps, err := crypto.ParseDecapsKey(cfg.DecapsKey)
 	if err != nil {
-		log.Fatalln("Could not import private key: " + err.Error())
+		log.Println("Could not import private key: " + err.Error())
+		return
 	}
 
 	encaps, err := crypto.ParseEncapsKey(cfg.EncapsKey)
 	if err != nil {
-		log.Fatalln("Could not import public key: " + err.Error())
+		log.Println("Could not import public key: " + err.Error())
+		return
 	}
 
 	serverAddr, err := net.ResolveUDPAddr("udp", cfg.Endpoint)
 	if err != nil {
-		log.Fatalln("Could not resolve endpoint: " + err.Error())
+		log.Println("Could not resolve endpoint: " + err.Error())
+		return
 	}
 
 	lAddr, _ := net.ResolveUDPAddr("udp", "0.0.0.0:0")
 	conn, err := net.ListenUDP("udp", lAddr)
 	if err != nil {
-		log.Fatalln("Failed to connect to server: " + err.Error())
+		log.Println("Failed to connect to server: " + err.Error())
+		return
 	}
 	defer conn.Close()
 
