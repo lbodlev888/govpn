@@ -64,4 +64,5 @@ func main() {
 
 		client.RunClient(ctx, &cfg)
 	}
+	file.Close()
 }

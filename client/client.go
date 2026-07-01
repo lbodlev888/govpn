@@ -90,7 +90,7 @@ func RunClient(ctx context.Context, cfg *config.PeerConfig) {
 			}
 		
 			respBuf := make([]byte, BUFFERSIZE)
-			conn.SetReadDeadline(time.Now().Add(1 * time.Second))
+			conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 			n, src, err := conn.ReadFrom(respBuf)
 			if err != nil {
 				log.Println("Failed to read ServerHello: " + err.Error())
