@@ -7,6 +7,7 @@ type PeerConfig struct {
 	VirtualIP string `json:"virtual_ip"`
 	Subnet int `json:"subnet"`
 	Endpoint string `json:"endpoint,omitempty"`
+	FullTunnel bool `json:"fulltunnel,omitempty"`
 }
 
 type ServerConfig struct {

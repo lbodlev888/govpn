@@ -22,7 +22,6 @@ func main() {
 	generateKeys := flag.Bool("genkey", false, "Run to generate cryptographic keys")
 	pubKey := flag.String("pubkey", "", "Get public key from private key")
 	configFile := flag.String("config", "", "Provide configuration file")
-	fullTunnel := flag.Bool("full-tunnel", false, "Try to route entire network traffic through the VPN")
 
 	flag.Parse()
 
@@ -63,7 +62,7 @@ func main() {
 			log.Fatalln("Could not parse peer configuration file: " + err.Error())
 		}
 
-		client.RunClient(ctx, &cfg, *fullTunnel)
+		client.RunClient(ctx, &cfg)
 	}
 	file.Close()
 }

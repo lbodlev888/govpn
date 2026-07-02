@@ -23,7 +23,7 @@ const (
 	HANDSHAKE_TIMEOUT = 5 * time.Minute
 )
 
-func RunClient(ctx context.Context, cfg *config.PeerConfig, runWithFullTunnel bool) {
+func RunClient(ctx context.Context, cfg *config.PeerConfig) {
 	var aead cipher.AEAD
 	cipherChan := make(chan struct{})
 	encryptionKey := make([]byte, chacha20poly1305.KeySize)
@@ -39,7 +39,7 @@ func RunClient(ctx context.Context, cfg *config.PeerConfig, runWithFullTunnel bo
 		return
 	}
 
-	if runWithFullTunnel {
+	if cfg.FullTunnel {
 		defer func() {
 			if err := tunif.ClearFullTunnel(strings.Split(cfg.Endpoint, ":")[0]); err != nil {
 				log.Println(err)
