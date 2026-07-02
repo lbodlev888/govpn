@@ -9,9 +9,7 @@ import (
 	"github.com/songgao/water"
 )
 
-const (
-	MTU = "1420"
-)
+const MTU = "1420"
 
 var gatewayAddr string
 
@@ -45,19 +43,11 @@ func SetupFullTunnel(endpoint string) error {
 	gatewayAddr = ip.String()
 
 	err = runIP("route", "add", endpoint, "via", gatewayAddr)
-
 	return err
 }
 
 func ClearFullTunnel(endpoint string) error {
-	err := runIP("route", "delete", "0.0.0.0/1", "dev", "bvpn0")
-	if err != nil { return err }
-
-	err = runIP("route", "delete", "128.0.0.0/1", "dev", "bvpn0")
-	if err != nil { return err }
-
-	err = runIP("route", "delete", endpoint, "via", gatewayAddr)
-	return err
+	return runIP("route", "delete", endpoint, "via", gatewayAddr)
 }
 
 func runIP(args ...string) error {
