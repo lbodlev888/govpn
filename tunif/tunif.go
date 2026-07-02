@@ -16,7 +16,7 @@ const (
 var gatewayAddr string
 
 func SetupInterface(localAddr string) (*water.Interface, error) {
-	iface, err := water.New(water.Config{DeviceType: water.TUN, PlatformSpecificParams: water.PlatformSpecificParams{Name: "bvpn1"}})
+	iface, err := water.New(water.Config{DeviceType: water.TUN, PlatformSpecificParams: water.PlatformSpecificParams{Name: "bvpn0"}})
 	if err != nil {
 		panic("Failed to init interface:" + err.Error())
 	}
