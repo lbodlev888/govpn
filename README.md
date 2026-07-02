@@ -28,9 +28,9 @@ a client can be re-implemented from scratch in any other language for any other 
   or re-encrypts and forwards it to the matching peer. Packets addressed to something
   that is neither the server nor a known peer are handed to the server's TUN device, so
   with host-side NAT the server can act as an internet gateway (see **Full tunnel**).
-- **Optional full tunnel.** A client started with `-full-tunnel` automatically routes
-  the machine's *entire* network traffic through the encrypted tunnel and restores the
-  original routing table on exit — no manual `ip route` juggling required.
+- **Optional full tunnel.** A client whose config sets `"fulltunnel": true` automatically
+  routes the machine's *entire* network traffic through the encrypted tunnel and restores
+  the original routing table on exit — no manual `ip route` juggling required.
 - **Automatic re-handshake.** The client renegotiates the session key every 3 minutes,
   and immediately whenever encryption or decryption fails (so a corrupted/replayed
   packet does not poison the cipher state).
@@ -292,33 +292,48 @@ that *all* of a client's traffic is encrypted and egresses through the server �
 thing a commercial "VPN" gives you (hidden origin IP, encrypted transit on the local
 network, etc.).
 
-Enable it on the client with the `-full-tunnel` flag:
+Enable it by adding `"fulltunnel": true` to the peer (client) config — there is no
+command-line flag. Then start the client the normal way:
+
+```json
+{
+  "name": "archlinux",
+  "privkey": "<this peer's private key>",
+  "pubkey":  "<server's public key>",
+  "virtual_ip": "10.20.0.3",
+  "subnet": 24,
+  "endpoint": "203.0.113.10:62789",
+  "fulltunnel": true
+}
+```
 
 ```sh
-sudo ./ownvpn -config peer.json -full-tunnel
+sudo ./ownvpn -config peer.json
 ```
 
 ### How the client side works
 
-When `-full-tunnel` is set, immediately after the TUN device is created the client
+When `fulltunnel` is `true`, immediately after the TUN device is created the client
 reprograms the host routing table (all via the `ip` command in the `tunif` package):
 
 1. **Capture all traffic.** It adds two routes, `0.0.0.0/1` and `128.0.0.0/1`, pointing
-   at the ownvpn TUN device. Together these two `/1` routes cover the whole IPv4 address
-   space, and because they are *more specific* than the existing `0.0.0.0/0` default
-   route they win for every destination — without deleting the original default route, so
-   it can be restored cleanly later.
+   at the ownvpn TUN device (`bvpn0`). Together these two `/1` routes cover the whole IPv4
+   address space, and because they are *more specific* than the existing `0.0.0.0/0`
+   default route they win for every destination — without deleting the original default
+   route, so it can be restored cleanly later.
 2. **Keep the tunnel itself reachable.** If we routed *everything* into the tunnel, the
    encrypted UDP packets going to the server would themselves be routed back into the
    tunnel — a loop. To avoid this the client discovers the machine's current physical
    default gateway (via the `jackpal/gateway` library) and pins a host route to the VPN
    **server's endpoint IP** through that real gateway, so the outer VPN packets keep
    using the physical link.
-3. **Clean up on exit.** The three routes above are torn down by `ClearFullTunnel`,
-   registered with `defer`, so on Ctrl-C / `SIGTERM` the original routing table is
-   restored. If the process is killed hard (`SIGKILL`, power loss) the routes survive and
-   must be removed manually (`ip route del 0.0.0.0/1`, `ip route del 128.0.0.0/1`, and the
-   host route to the endpoint).
+3. **Clean up on exit.** On Ctrl-C / `SIGTERM` the client's `defer` calls
+   `ClearFullTunnel`, which deletes the pinned host route to the endpoint. The two `/1`
+   routes are bound to the `bvpn0` device, so the kernel drops them automatically when the
+   TUN interface is closed — they do not need to be removed explicitly. If the process is
+   killed hard (`SIGKILL`, power loss) the device teardown still clears the `/1` routes,
+   but the endpoint host route may linger and can be removed manually with
+   `ip route del <endpoint-ip> via <gateway-ip>`.
 
 The endpoint IP used for the host route is taken from the `endpoint` in the peer config,
 with the `:port` stripped (`strings.Split(cfg.Endpoint, ":")[0]`). This assumes a literal
@@ -364,8 +379,8 @@ the server's TUN, matched against `peersByIP`, re-encrypted and sent back to the
 - DNS is not modified. Your resolver requests travel through the tunnel like any other
   traffic, but the servers you query are unchanged; set DNS separately if you want to
   avoid your ISP's resolver.
-- Full tunnel is a **client-only flag**; the server serves normal peers and full-tunnel
-  peers at the same time with no extra configuration beyond the host NAT above.
+- Full tunnel is a **client-only config option**; the server serves normal peers and
+  full-tunnel peers at the same time with no extra configuration beyond the host NAT above.
 
 ---
 
@@ -412,9 +427,13 @@ Configuration is a JSON file passed with `-config`.
   "pubkey":  "<server's public key>",
   "virtual_ip": "10.20.0.3",
   "subnet": 24,
-  "endpoint": "203.0.113.10:62789"
+  "endpoint": "203.0.113.10:62789",
+  "fulltunnel": false
 }
 ```
+
+`fulltunnel` is optional (defaults to `false`). Set it to `true` to route the whole
+machine's traffic through the server — see the **Full tunnel** section.
 
 **Server:**
 
@@ -456,12 +475,8 @@ Once connected, peers can reach each other over the `virtual_ip` addresses on th
 configured subnet.
 
 To push **all** of the client's traffic through the server (and hide the client's origin
-IP), add `-full-tunnel` and make sure the server host is set up for NAT — see the
-**Full tunnel** section:
-
-```sh
-sudo ./ownvpn -config peer.json -full-tunnel
-```
+IP), set `"fulltunnel": true` in the peer config and make sure the server host is set up
+for NAT — see the **Full tunnel** section. There is no command-line flag for it.
 
 ### Flags
 
@@ -469,6 +484,5 @@ sudo ./ownvpn -config peer.json -full-tunnel
 |----------------|------------|--------------------------------------------------------------------|
 | `-server`      | both       | Run in server (hub) mode instead of client mode.                   |
 | `-config FILE` | both       | Path to the JSON config (required to run the tunnel).              |
-| `-full-tunnel` | client     | Route the whole machine's traffic through the tunnel.             |
 | `-genkey`      | —          | Generate and print a new ML-KEM-768 private key, then exit.        |
 | `-pubkey KEY`  | —          | Print the public key for the given private key, then exit.         |
