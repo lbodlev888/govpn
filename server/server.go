@@ -220,10 +220,6 @@ func handleData(payload []byte, src *net.UDPAddr) {
 	}
 
 	dstIP := net.IP(frame[16:20]).String()
-	if virtualIP == dstIP {
-		iface.Write(frame)
-		return
-	}
 
 	peersMu.RLock()
 	dstPeer, ok := peersByIP[dstIP]
