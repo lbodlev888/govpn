@@ -14,7 +14,7 @@ const MTU = "1420"
 var gatewayAddr string
 
 func SetupInterface(localAddr string) (*water.Interface, error) {
-	iface, err := water.New(water.Config{DeviceType: water.TUN, PlatformSpecificParams: water.PlatformSpecificParams{Name: "bvpn0"}})
+	iface, err := water.New(water.Config{DeviceType: water.TUN, PlatformSpecificParams: water.PlatformSpecificParams{Name: "bvpn%d"}})
 	if err != nil {
 		panic("Failed to init interface:" + err.Error())
 	}
