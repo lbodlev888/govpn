@@ -7,7 +7,6 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"syscall"
 
 	"github.com/lbodlev888/ownvpn/client"
 	"github.com/lbodlev888/ownvpn/config"
@@ -18,14 +17,14 @@ import (
 const OWNVPN_VERSION = "ownvpn0.0.4"
 
 func main() {
-	serverMode := flag.Bool("server", false, "Run in server mode")
-	generateKeys := flag.Bool("genkey", false, "Run to generate cryptographic keys")
+	serverMode := flag.Bool("server", false, "Run in server mode") //in future move to bare or web mode
+	generateKey := flag.Bool("genkey", false, "Generate cryptographic keys")
 	pubKey := flag.String("pubkey", "", "Get public key from private key")
-	configFile := flag.String("config", "", "Provide configuration file")
+	configFile := flag.String("config", "/etc/ownvpn/config.json", "Provide the path to configuration file")
 
 	flag.Parse()
 
-	if *generateKeys {
+	if *generateKey {
 		crypto.GeneratePrivate()
 		return
 	}
@@ -40,29 +39,34 @@ func main() {
 		log.Fatalln("Missing configuration file")
 	}
 
-	ctx, cancel := signal.NotifyContext(context.WithValue(context.Background(), "version", OWNVPN_VERSION), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
+	//move version key to org
+	ctx, _ := signal.NotifyContext(context.WithValue(context.Background(), "version", OWNVPN_VERSION), os.Interrupt)
 
-	file, err := os.Open(*configFile)
+	rawConfig, err := os.ReadFile(*configFile)
 	if err != nil {
-		log.Fatalln("Could not open config file: " + err.Error())
+		log.Println("Failed to read configuration file: " + err.Error())
+		return
 	}
-	dec := json.NewDecoder(file)
 
 	if *serverMode {
 		var cfg config.ServerConfig
-		if err := dec.Decode(&cfg); err != nil {
-			log.Fatalln("Could not parse server configuration file: " + err.Error())
+		if err := json.Unmarshal(rawConfig, &cfg); err != nil {
+			log.Println("Failed to parse configuration: " + err.Error())
+			return
 		}
 
-		server.RunServer(ctx, &cfg, cancel)
+		if err := server.Init(cfg); err != nil {
+			log.Println("failed to init: " + err.Error())
+			return
+		}
+		server.Run(ctx)
 	} else {
 		var cfg config.PeerConfig
-		if err := dec.Decode(&cfg); err != nil {
-			log.Fatalln("Could not parse peer configuration file: " + err.Error())
+		if err := json.Unmarshal(rawConfig, &cfg); err != nil {
+			log.Println("Failed to parse configuration: " + err.Error())
+			return
 		}
 
-		client.RunClient(ctx, &cfg)
+		client.Run(ctx, cfg)
 	}
-	file.Close()
 }

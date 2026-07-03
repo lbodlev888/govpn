@@ -3,71 +3,71 @@ package server
 import (
 	"context"
 	"crypto/mlkem"
-	"crypto/rand"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"sync"
 
 	"github.com/lbodlev888/ownvpn/config"
 	"github.com/lbodlev888/ownvpn/crypto"
-	"github.com/lbodlev888/ownvpn/models"
-	"github.com/lbodlev888/ownvpn/proto"
 	"github.com/lbodlev888/ownvpn/tunif"
 	"github.com/songgao/water"
-	"golang.org/x/crypto/chacha20poly1305"
 )
 
 const (
-	BUFFERSIZE = 2048
+	buffersize = 2048
 )
 
 var (
 	peersMu      sync.RWMutex
-	peersByIP    = make(map[string]*models.Peer)
-	peersByAddr  = make(map[string]*models.Peer)
-	allowedPeers map[string]config.PeerConfig
+	peersByIP    = make(map[string]*peer) //key is virtual IP
+	peersByAddr  = make(map[string]*peer) //key is public IP
+	allowedPeersMu sync.RWMutex
+	allowedPeers = make(map[string]config.PeerConfig) //key is name of peer
 	wg           sync.WaitGroup
-	virtualIP    string
 	decapsKey    *mlkem.DecapsulationKey768
 	iface        *water.Interface
 	udpConn      *net.UDPConn
+	cfg config.ServerConfig
 )
 
-func RunServer(ctx context.Context, cfg *config.ServerConfig, stop context.CancelFunc) {
+func Init(serverConfiguration config.ServerConfig) error {
+	cfg = serverConfiguration
+
 	var err error
 	decapsKey, err = crypto.ParseDecapsKey(cfg.DecapsKey)
 	if err != nil {
-		log.Fatalln("Could not import private key: " + err.Error())
+		return fmt.Errorf("Init: could not import private key: %w", err)
 	}
 
-	virtualIP = cfg.VirtualIP
-
-	allowedPeers = make(map[string]config.PeerConfig)
-	for _, p := range cfg.Peers {
-		allowedPeers[p.Name] = p
-	}
+	loadAllowedPeers()
 
 	iface, err = tunif.SetupInterface(fmt.Sprintf("%s/%d", cfg.VirtualIP, cfg.Subnet))
 	if err != nil {
-		log.Fatalln("Could not create tun interface: " + err.Error())
+		return fmt.Errorf("Init: could not create tun interface: %w", err)
 	}
 
 	udpAddr, err := net.ResolveUDPAddr("udp", cfg.BindAddress)
 	if err != nil {
-		log.Fatalln("Could not resolve bind address: " + err.Error())
+		return fmt.Errorf("Init: could not resolve bind address: %w", err)
 	}
 
 	udpConn, err = net.ListenUDP("udp", udpAddr)
 	if err != nil {
-		log.Fatalln("Could not bind UDP socket: " + err.Error())
+		return fmt.Errorf("Init: could not bind UDP socket: %w", err)
 	}
-	defer udpConn.Close()
 
+	return nil
+}
+
+func Run(ctx context.Context) {
 	log.Printf("Server listening on %s (UDP, VPN IP: %s/%d)", cfg.BindAddress, cfg.VirtualIP, cfg.Subnet)
 
 	wg.Go(func() { readFromPeers(ctx) })
 	wg.Go(func() { readFromIface(ctx) })
+	wg.Go(func() { listenForSignals(ctx) }) //to be removed in the future
 
 	wg.Go(func() {
 		<-ctx.Done()
@@ -78,205 +78,100 @@ func RunServer(ctx context.Context, cfg *config.ServerConfig, stop context.Cance
 	wg.Wait()
 }
 
-func readFromPeers(ctx context.Context) {
-	buf := make([]byte, BUFFERSIZE)
-	for {
-		n, src, err := udpConn.ReadFromUDP(buf)
-		if err != nil {
-			if ctx.Err() != nil {
-				return
-			}
-			log.Println("Failed to read UDP datagram: " + err.Error())
-			continue
-		}
-		if n < 1 {
-			continue
-		}
+func AddNewPeer(peer config.PeerConfig) {
+	allowedPeersMu.Lock()
+	defer allowedPeersMu.Unlock()
 
-		pkt := buf[:n]
-		switch pkt[0] {
-		case proto.MsgClientHello:
-			handleHandshake(ctx, pkt, src)
-		case proto.MsgData:
-			handleData(pkt[1:], src)
-		case proto.MsgKeepAlive:
-			sendAckKeepAlive(pkt, src)
-		default:
-			log.Printf("Invalid packet from %s\n", net.IP(src.IP).String())
-		}
-	}
+	allowedPeers[peer.Name] = peer
 }
 
-func sendAckKeepAlive(pkt []byte, src *net.UDPAddr) {
-	if proto.DecodeKeepAlive(pkt, proto.MsgKeepAliveSYN) {
-		if _, err := udpConn.WriteToUDP(proto.EncodeKeepAlive(proto.MsgKeepAliveACK), src); err != nil {
-			log.Println("Failed to send keepalive syn:" + err.Error())
-		}
+func RemovePeer(name string) {
+	allowedPeersMu.Lock()
+	peersMu.Lock()
+	defer func() {
+		allowedPeersMu.Unlock()
+		peersMu.Unlock()
+	}()
+
+	peer, ok := allowedPeers[name]
+	if !ok {
 		return
 	}
-	log.Println("Received invalid keepalive from: " + src.String())
+
+	virtualIP := peer.VirtualIP
+	addr := peersByIP[virtualIP].Addr.String()
+
+	delete(allowedPeers, name)
+	delete(peersByIP, virtualIP)
+	delete(peersByAddr, addr)
 }
 
-func handleHandshake(ctx context.Context, pkt []byte, src *net.UDPAddr) {
-	clientHello, err := proto.DecodeClientHello(pkt)
-	if err != nil {
-		log.Println("Invalid ClientHello: " + err.Error())
-		return
-	}
-
-	peerCfg, ok := allowedPeers[clientHello.Name]
+func EnablePeer(name string) {
+	allowedPeersMu.Lock()
+	defer allowedPeersMu.Unlock()
+	peer, ok := allowedPeers[name]
 	if !ok {
-		log.Printf("Unknown peer %q from %s. Dropping\n", clientHello.Name, src)
 		return
 	}
-
-	encaps, err := crypto.ParseEncapsKey(peerCfg.EncapsKey)
-	if err != nil {
-		log.Printf("Could not import public key of peer %s: %v\n", peerCfg.Name, err)
-		return
-	}
-
-	sharedKey2, ciphertext := encaps.Encapsulate()
-
-	sharedKey1, err := decapsKey.Decapsulate(clientHello.PublicData)
-	if err != nil {
-		log.Printf("Could not decapsulate ClientHello from %s: %v\n", peerCfg.Name, err)
-		return
-	}
-
-	final_key := append(sharedKey1, sharedKey2...)
-
-	infoString, ok := ctx.Value("version").(string)
-	if !ok {
-		log.Println("Missing ownvpn version key in context")
-		return
-	}
-
-	encryption_key, err := crypto.DeriveEncryptionKey(final_key, nil, infoString, chacha20poly1305.KeySize)
-	if err != nil {
-		log.Println("Failed to derive encryption key: " + err.Error())
-		return
-	}
-
-	serverHelloBytes, err := proto.EncodeServerHello(proto.ServerHello{PublicData: ciphertext})
-	if err != nil {
-		log.Println("Failed to encode ServerHello: " + err.Error())
-		return
-	}
-
-	if _, err := udpConn.WriteToUDP(serverHelloBytes, src); err != nil {
-		log.Println("Failed to send ServerHello: " + err.Error())
-		return
-	}
-
-	peer := &models.Peer{
-		Addr:       src,
-		VirtualIP:  net.ParseIP(peerCfg.VirtualIP),
-		SessionKey: encryption_key,
-	}
+	peer.Disabled = false
+	allowedPeers[name] = peer
 
 	peersMu.Lock()
-	if old, ok := peersByIP[peerCfg.VirtualIP]; ok {
-		delete(peersByAddr, old.Addr.String())
-		log.Printf("Replacing existing session for %s (%s -> %s)\n", peerCfg.Name, old.Addr, src)
-	}
-	peersByIP[peerCfg.VirtualIP] = peer
-	peersByAddr[src.String()] = peer
-	peersMu.Unlock()
+	defer peersMu.Unlock()
 
-	log.Printf("Peer connected: %s -> %s (from %s)\n", peerCfg.Name, peerCfg.VirtualIP, src)
-}
-
-func handleData(payload []byte, src *net.UDPAddr) {
-	peersMu.RLock()
-	peer, ok := peersByAddr[src.String()]
-	peersMu.RUnlock()
+	virtualPeer, ok := peersByIP[peer.VirtualIP]
 	if !ok {
-		// unknown source; ignore (could be stale or spoofed)
 		return
 	}
+	virtualPeer.disabled = false
 
-	if len(payload) < chacha20poly1305.NonceSize {
-		return
-	}
-
-	cipher, err := chacha20poly1305.New(peer.SessionKey)
-	if err != nil {
-		log.Println("Failed to init cipher: " + err.Error())
-		return
-	}
-
-	nonce := payload[:chacha20poly1305.NonceSize]
-	ciphertext := payload[chacha20poly1305.NonceSize:]
-
-	frame, err := cipher.Open(nil, nonce, ciphertext, nil)
-	if err != nil {
-		log.Printf("Failed to decrypt frame from %s: %v\n", src.String(), err.Error())
-		return
-	}
-
-	if len(frame) < 20 || frame[0] >> 4 != 4 {
-		return
-	}
-
-	dstIP := net.IP(frame[16:20]).String()
-
-	peersMu.RLock()
-	dstPeer, ok := peersByIP[dstIP]
-	peersMu.RUnlock()
+	logicalPeer, ok := peersByAddr[virtualPeer.Addr.String()]
 	if !ok {
-		iface.Write(frame)
 		return
 	}
-
-	sendEncrypted(dstPeer, frame)
+	logicalPeer.disabled = false
 }
 
-func readFromIface(ctx context.Context) {
-	packet := make([]byte, BUFFERSIZE)
-	for {
-		n, err := iface.Read(packet)
-		if err != nil {
-			if ctx.Err() != nil {
-				return
-			}
-			log.Println("Failed to read from iface: " + err.Error())
-			continue
-		}
-		actualData := packet[:n]
-
-		if len(actualData) < 20 || actualData[0] >> 4 != 4 {
-			continue
-		}
-
-		dstIP := net.IP(actualData[16:20]).String()
-		peersMu.RLock()
-		peer, ok := peersByIP[dstIP]
-		peersMu.RUnlock()
-		if !ok {
-			continue
-		}
-
-		sendEncrypted(peer, actualData)
+func DisablePeer(name string) {
+	allowedPeersMu.Lock()
+	defer allowedPeersMu.Unlock()
+	peer, ok := allowedPeers[name]
+	if !ok {
+		log.Println("allowed peer not found")
+		return
 	}
+	peer.Disabled = true
+	allowedPeers[name] = peer
+
+	peersMu.Lock()
+	defer peersMu.Unlock()
+	virtualPeer, ok := peersByIP[peer.VirtualIP]
+	if !ok {
+		log.Println("virtual peer not found")
+		return
+	}
+	virtualPeer.disabled = true
+
+	logicalPeer, ok := peersByAddr[virtualPeer.Addr.String()]
+	if !ok {
+		log.Println("logical peer not found")
+		return
+	}
+	logicalPeer.disabled = true
 }
 
-func sendEncrypted(peer *models.Peer, frame []byte) {
-	cipher, err := chacha20poly1305.New(peer.SessionKey)
+func ExportPeerSettings(configFile string) error {
+	cfg.Peers = nil
+	cfg.Peers = make([]config.PeerConfig, 0, len(allowedPeers))
+
+	for _, peer := range allowedPeers {
+		cfg.Peers = append(cfg.Peers, peer)
+	}
+
+	data, err := json.Marshal(cfg)
 	if err != nil {
-		log.Println("Failed to init cipher: " + err.Error())
-		return
+		return fmt.Errorf("ExportSettings: %w", err)
 	}
 
-	nonce := make([]byte, chacha20poly1305.NonceSize)
-	rand.Read(nonce)
-
-	out := make([]byte, 0, 1+len(nonce)+len(frame)+chacha20poly1305.Overhead)
-	out = append(out, proto.MsgData)
-	out = append(out, nonce...)
-	out = cipher.Seal(out, nonce, frame, nil)
-
-	if _, err := udpConn.WriteToUDP(out, peer.Addr); err != nil {
-		log.Println("Failed to send to peer " + peer.Addr.String() + ": " + err.Error())
-	}
+	return os.WriteFile(configFile, data, 0600)
 }
