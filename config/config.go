@@ -5,7 +5,7 @@ type PeerConfig struct {
 	DecapsKey string `json:"privkey,omitempty"`
 	EncapsKey string `json:"pubkey"`
 	VirtualIP string `json:"virtual_ip"`
-	Subnet int `json:"subnet"`
+	Subnet int `json:"subnet,omitempty"`
 	Endpoint string `json:"endpoint,omitempty"`
 	FullTunnel bool `json:"fulltunnel,omitempty"`
 	Disabled bool `json:"disabled,omitempty"`
