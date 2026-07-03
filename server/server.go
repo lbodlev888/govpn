@@ -85,6 +85,18 @@ func AddNewPeer(peer config.PeerConfig) {
 	allowedPeers[peer.Name] = peer
 }
 
+func GetAllPeers() []config.PeerConfig {
+	allowedPeersMu.RLock()
+	defer allowedPeersMu.RUnlock()
+
+	out := make([]config.PeerConfig, 0, len(allowedPeers))
+	for _, peer := range allowedPeers {
+		out = append(out, peer)
+	}
+
+	return out
+}
+
 func RemovePeer(name string) {
 	allowedPeersMu.Lock()
 	peersMu.Lock()
