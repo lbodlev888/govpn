@@ -2,7 +2,7 @@ package config
 
 type PeerConfig struct {
 	Name string `json:"name"`
-	DecapsKey string `json:"privkey"`
+	DecapsKey string `json:"privkey,omitempty"`
 	EncapsKey string `json:"pubkey"`
 	VirtualIP string `json:"virtual_ip"`
 	Subnet int `json:"subnet"`
