@@ -36,6 +36,10 @@ func listenForSignals(ctx context.Context) {
 	for {
 		client, err := unixListener.Accept()
 		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+
 			log.Println("Failed to accept client: " + err.Error())
 			continue
 		}
