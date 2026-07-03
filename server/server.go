@@ -67,7 +67,6 @@ func Run(ctx context.Context) {
 
 	wg.Go(func() { readFromPeers(ctx) })
 	wg.Go(func() { readFromIface(ctx) })
-	wg.Go(func() { listenForSignals(ctx) }) //to be removed in the future
 
 	wg.Go(func() {
 		<-ctx.Done()
@@ -78,11 +77,29 @@ func Run(ctx context.Context) {
 	wg.Wait()
 }
 
-func AddNewPeer(peer config.PeerConfig) {
+func NewPeer(peer config.PeerConfig) error {
 	allowedPeersMu.Lock()
 	defer allowedPeersMu.Unlock()
 
+	if err := checkEncapsulation(peer.EncapsKey); err != nil {
+		return fmt.Errorf("NewPeer: invalid encapsulation key: %w", err)
+	}
+
 	allowedPeers[peer.Name] = peer
+
+	return nil
+}
+
+func GetAllPeers() []config.PeerConfig {
+	allowedPeersMu.RLock()
+	defer allowedPeersMu.RUnlock()
+
+	out := make([]config.PeerConfig, 0, len(allowedPeers))
+	for _, peer := range allowedPeers {
+		out = append(out, peer)
+	}
+
+	return out
 }
 
 func RemovePeer(name string) {
