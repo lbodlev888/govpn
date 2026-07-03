@@ -114,12 +114,20 @@ func RemovePeer(name string) {
 	if !ok {
 		return
 	}
-
-	virtualIP := peer.VirtualIP
-	addr := peersByIP[virtualIP].Addr.String()
-
 	delete(allowedPeers, name)
-	delete(peersByIP, virtualIP)
+
+	virtualPeer, ok := peersByIP[peer.VirtualIP]
+	if !ok {
+		return
+	}
+	delete(peersByIP, peer.VirtualIP)
+
+	addr := virtualPeer.Addr.String()
+	_, ok = peersByAddr[addr]
+	if !ok {
+		return
+	}
+
 	delete(peersByAddr, addr)
 }
 
