@@ -12,7 +12,8 @@ import (
 func GeneratePrivate() {
 	decaps, err := mlkem.GenerateKey768()
 	if err != nil {
-		log.Fatalln("Could not generate decaps key: " + err.Error())
+		log.Println("Could not generate decaps key: " + err.Error())
+		return
 	}
 
 	base64_decaps := base64.StdEncoding.EncodeToString(decaps.Bytes())
@@ -23,12 +24,14 @@ func GeneratePrivate() {
 func GetPublicKey(pubKey string) {
 	raw_decaps, err := base64.StdEncoding.DecodeString(pubKey)
 	if err != nil {
-		log.Fatalln("Could not decode private key: " + err.Error())
+		log.Println("Could not decode private key: " + err.Error())
+		return
 	}
 
 	decaps, err := mlkem.NewDecapsulationKey768(raw_decaps)
 	if err != nil {
-		log.Fatalln("Could not import private key: " + err.Error())
+		log.Println("Could not import private key: " + err.Error())
+		return
 	}
 
 	encaps := decaps.EncapsulationKey().Bytes()
@@ -54,6 +57,6 @@ func ParseEncapsKey(encaps_str string) (*mlkem.EncapsulationKey768, error) {
 	return mlkem.NewEncapsulationKey768(raw_encaps)
 }
 
-func DeriveEncryptionKey(material, salt []byte, infoString string, len int) ([]byte, error) {
-	return hkdf.Key(sha256.New, material, salt, infoString, len)
+func DeriveEncryptionKey(material, salt []byte, infoString string, length int) ([]byte, error) {
+	return hkdf.Key(sha256.New, material, salt, infoString, length)
 }
