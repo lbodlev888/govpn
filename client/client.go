@@ -23,7 +23,7 @@ const (
 	HANDSHAKE_TIMEOUT = 5 * time.Minute
 )
 
-func RunClient(ctx context.Context, cfg *config.PeerConfig) {
+func Run(ctx context.Context, cfg config.PeerConfig) {
 	var aead cipher.AEAD
 	cipherChan := make(chan struct{})
 	encryptionKey := make([]byte, chacha20poly1305.KeySize)
