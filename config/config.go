@@ -8,6 +8,7 @@ type PeerConfig struct {
 	Subnet int `json:"subnet"`
 	Endpoint string `json:"endpoint,omitempty"`
 	FullTunnel bool `json:"fulltunnel,omitempty"`
+	Disabled bool `json:"disabled,omitempty"`
 }
 
 type ServerConfig struct {
