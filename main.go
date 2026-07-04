@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -25,12 +26,22 @@ func main() {
 	flag.Parse()
 
 	if *generateKey {
-		crypto.GeneratePrivate()
+		priv, err := crypto.GeneratePrivate()
+		if err != nil {
+			log.Println(err)
+			return
+		}
+		fmt.Println("Private key: " + priv)
 		return
 	}
 
 	if *pubKey != "" {
-		crypto.GetPublicKey(*pubKey)
+		pubkey, err := crypto.GetPublicKey(*pubKey)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+		fmt.Println("Public key: " + pubkey)
 		return
 	}
 
