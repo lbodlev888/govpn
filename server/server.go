@@ -185,7 +185,7 @@ func DisablePeer(name string) {
 	logicalPeer.disabled = true
 }
 
-func ExportPeerSettings(configFile string) error {
+func MarshalPeerSettings() ([]byte, error) {
 	cfg.Peers = nil
 	cfg.Peers = make([]config.PeerConfig, 0, len(allowedPeers))
 
@@ -195,8 +195,8 @@ func ExportPeerSettings(configFile string) error {
 
 	data, err := json.Marshal(cfg)
 	if err != nil {
-		return fmt.Errorf("ExportSettings: %w", err)
+		return nil, fmt.Errorf("MarshalPeerSettings: %w", err)
 	}
 
-	return os.WriteFile(configFile, data, 0600)
+	return data, nil
 }
