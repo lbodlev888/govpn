@@ -45,7 +45,7 @@ func Run(ctx context.Context, cfg config.PeerConfig) {
 				log.Println(err)
 			}
 		}()
-		err := tunif.SetupFullTunnel(strings.Split(cfg.Endpoint, ":")[0])
+		err := tunif.SetupFullTunnel(strings.Split(cfg.Endpoint, ":")[0], iface.Name())
 		if err != nil {
 			log.Println("Failed to setup full tunnel")
 			return
