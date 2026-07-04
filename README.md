@@ -32,7 +32,7 @@ This README documents two things:
   - [`client` — the peer](#client--the-peer)
   - [`tunif` — TUN device & routing](#tunif--tun-device--routing)
   - [`proto` — wire codec](#proto--wire-codec)
-- [The `version` context value (required)](#the-version-context-value-required)
+- [Replay protection & nonces](#replay-protection--nonces)
 - [Reference CLI (`examples/sample_client`)](#reference-cli-examplessample_client)
 - [Repository layout](#repository-layout)
 - [Wire protocol](#wire-protocol)
@@ -54,9 +54,14 @@ This README documents two things:
   whose static ML-KEM-768 public key matches. Decapsulation only succeeds for the holder
   of the matching private key, so the handshake authenticates both sides.
 - **Authenticated encryption for data.** ChaCha20-Poly1305 AEAD on every data packet with
-  a per-packet random 12-byte nonce (16-byte Poly1305 tag).
-- **HKDF key derivation.** Session key derived with HKDF-SHA256 from the concatenation of
-  both shared secrets, using a caller-supplied version string as the `info` parameter.
+  a 12-byte nonce (16-byte Poly1305 tag). The nonce is a per-session monotonic counter.
+- **Replay protection.** Each direction carries a strictly-increasing 64-bit counter in the
+  nonce; the receiver keeps a high-water mark and drops any packet whose counter is not
+  greater than the highest already accepted. Counters reset on every re-handshake.
+- **Directional keys.** Two separate ChaCha20-Poly1305 keys are derived per session with
+  HKDF-SHA256 over the concatenation of both shared secrets — one for client→server
+  (`info = "c2s"`) and one for server→client (`info = "s2c"`) — so the two directions never
+  share a key or a nonce space.
 - **Hub topology with IP-based routing.** The server inspects the destination IPv4 address
   of each decrypted inner packet and either delivers it locally or re-encrypts and
   forwards it to the matching peer.
@@ -124,11 +129,7 @@ import (
 )
 
 func main() {
-    // The "version" value is REQUIRED — see the dedicated section below.
-    ctx, stop := signal.NotifyContext(
-        context.WithValue(context.Background(), "version", "myapp-v1"),
-        os.Interrupt,
-    )
+    ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
     defer stop()
 
     cfg := config.ServerConfig{
@@ -167,10 +168,7 @@ import (
 )
 
 func main() {
-    ctx, stop := signal.NotifyContext(
-        context.WithValue(context.Background(), "version", "myapp-v1"),
-        os.Interrupt,
-    )
+    ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
     defer stop()
 
     cfg := config.PeerConfig{
@@ -187,9 +185,10 @@ func main() {
 }
 ```
 
-> **Note:** the `version` string must be **identical** on the client and the server — it
-> is fed into HKDF as the `info` parameter, so a mismatch produces different session keys
-> and every packet fails to decrypt. See [The `version` context value](#the-version-context-value-required).
+> **Note:** the client and server must run the same ownvpn version. The HKDF `info` strings
+> (`"c2s"`/`"s2c"`) and the packet framing are fixed in code; there is no negotiated version
+> field, so mismatched builds that change either will simply fail to decrypt each other's
+> packets.
 
 ---
 
@@ -217,9 +216,10 @@ by `server`/`client`; exposed for callers that want to validate keys ahead of ti
 ```go
 func DeriveEncryptionKey(material, salt []byte, infoString string, length int) ([]byte, error)
 ```
-Thin wrapper over `hkdf.Key(sha256.New, ...)`. ownvpn calls it as
-`DeriveEncryptionKey(ss1||ss2, nil, version, 32)` to derive the 32-byte ChaCha20-Poly1305
-session key. Exposed so a re-implementation can reproduce the exact derivation.
+Thin wrapper over `hkdf.Key(sha256.New, ...)`. ownvpn calls it twice per session —
+`DeriveEncryptionKey(ss1||ss2, nil, "c2s", 32)` and `DeriveEncryptionKey(ss1||ss2, nil, "s2c", 32)`
+— to derive the two directional 32-byte ChaCha20-Poly1305 keys. Exposed so a
+re-implementation can reproduce the exact derivation.
 
 ### `config` — configuration structs
 
@@ -268,8 +268,7 @@ once before `Run`.
 func Run(ctx context.Context)
 ```
 Starts the read loops (UDP ⇄ TUN) and **blocks** until `ctx` is cancelled, at which point
-it closes the interface and socket and returns. `ctx` **must** carry the `version` value
-(see below).
+it closes the interface and socket and returns.
 
 ```go
 func NewPeer(peer config.PeerConfig) error
@@ -326,8 +325,7 @@ func Run(ctx context.Context, cfg config.PeerConfig)
 The entire client data-plane in one blocking call. It creates the TUN device, optionally
 sets up the full tunnel, performs the handshake, and runs four goroutines (handshake loop,
 keepalive, network→TUN reader, TUN→network writer). It returns when `ctx` is cancelled and
-cleans up its interface/socket (and full-tunnel routes) on the way out. `ctx` **must**
-carry the `version` value.
+cleans up its interface/socket (and full-tunnel routes) on the way out.
 
 Unlike the server, the client is **not** a singleton — you can run multiple `client.Run`
 calls concurrently (each gets its own TUN device, auto-named `bvpn%d`), though each still
@@ -378,35 +376,49 @@ func DecodeKeepAlive(buf []byte, expectedFlag byte) bool
 
 ---
 
-## The `version` context value (required)
+## Replay protection & nonces
 
-Both `server.Run`/its handshake handler and `client.Run` read a string from the context:
+The 12-byte ChaCha20-Poly1305 nonce is **not random** — it is a per-session monotonic
+counter. The counter is written big-endian into the first 8 bytes of the nonce (the
+remaining 4 bytes are zero), so it is really a 64-bit sequence number.
 
-```go
-ctx := context.WithValue(context.Background(), "version", "myapp-v1")
+**Two directions, two keys, two counters.** Each session derives independent keys for
+client→server (`info = "c2s"`) and server→client (`info = "s2c"`), and each direction has
+its own send counter and its own receive high-water mark. This guarantees a `(key, nonce)`
+pair is never reused across directions.
+
+**How a receiver rejects replays.** For every inbound data packet the receiver reads the
+64-bit counter and compares it to the highest value it has already accepted on that
+direction:
+
+```
+if counter <= highWaterMark:   drop  (replay / out-of-order)
+else after successful decrypt:  highWaterMark = counter
 ```
 
-This string is passed to HKDF as the **`info`** parameter when deriving the session key. It
-acts as a domain-separation / protocol-version tag, and it **must match on both ends** —
-if the client and server disagree, they derive different keys and no packet ever decrypts.
+The high-water mark is only advanced **after** the AEAD tag verifies, so an attacker cannot
+lock a peer out by injecting a forged packet with a huge counter.
 
-Consequences of omitting it:
+**Counters reset on every re-handshake.** Because a fresh session key is derived each
+handshake (every 5 minutes, or on any cipher failure), both the send counter and the
+receive high-water mark restart at zero, and the new key makes the reused low counters safe.
+On the server a re-handshake creates a brand-new session object, so its counters start at
+zero automatically; the client zeroes its counters *before* publishing the new keys.
 
-- **Server:** the handshake handler logs `Missing ownvpn version key in context` and drops
-  the handshake — no peer can ever connect.
-- **Client:** `client.Run` calls `log.Fatalln`, terminating the process.
-
-Pick a stable string for your application and bump it deliberately when you want to force
-incompatibility between versions. The reference CLI uses the constant `"ownvpn0.0.4"`.
+**Known limitation — strict ordering.** This is a single high-water mark, not a sliding
+window (RFC 6479). It is simple and safe, but any packet that arrives *out of order* looks
+like a replay and is dropped, causing an upper-layer retransmit. UDP reordering is usually
+rare on a path, so in practice this is fine; if it ever becomes a throughput problem, a
+small sliding-window bitmap is the standard upgrade.
 
 ---
 
 ## Reference CLI (`examples/sample_client`)
 
 The original standalone binary is preserved as a worked example that wires the library
-packages together: it parses flags, reads a JSON config, sets the `version` context value,
-and dispatches to `server.Run` or `client.Run`. Read it as the canonical "how do I glue
-these packages together" reference — see [`examples/sample_client/main.go`](examples/sample_client/main.go).
+packages together: it parses flags, reads a JSON config, and dispatches to `server.Run` or
+`client.Run`. Read it as the canonical "how do I glue these packages together" reference —
+see [`examples/sample_client/main.go`](examples/sample_client/main.go).
 
 Build and use it directly:
 
@@ -494,8 +506,10 @@ Constants:
 
 - ML-KEM-768 ciphertext is fixed at **1088 bytes**; shared secret is **32 bytes**.
 - ChaCha20-Poly1305: **32-byte key**, **12-byte nonce**, **16-byte tag**.
-- HKDF salt: empty (nil). HKDF info string: the caller's version string (the reference CLI
-  uses `"ownvpn0.0.4"`, literal ASCII, no trailing newline). Output length: 32 bytes.
+- HKDF salt: empty (nil). HKDF info string: `"c2s"` for the client→server key and `"s2c"`
+  for the server→client key (literal ASCII, no trailing newline). Output length: 32 bytes each.
+- The 12-byte data nonce is a **64-bit big-endian counter** in bytes 0..7, with bytes 8..11
+  set to zero. It starts at 1 each session and increments by one per packet, per direction.
 
 ### ClientHello (0x01)
 
@@ -520,14 +534,16 @@ Constants:
 ### Data (0x03)
 
 ```
-+------+----------------+-----------------------------------+
-| 0x03 | nonce (12 B)   | chacha20poly1305 ciphertext+tag   |
-+------+----------------+-----------------------------------+
-   1B        12 B                 inner_len + 16 B
++------+---------------------------+-----------------------------------+
+| 0x03 | nonce = ctr(8B BE) + 0000 | chacha20poly1305 ciphertext+tag   |
++------+---------------------------+-----------------------------------+
+   1B            12 B                          inner_len + 16 B
 ```
 
-The plaintext is a **raw IPv4 packet** as read from the TUN device. The AEAD is called with
-`additionalData = nil`.
+The nonce is a 64-bit big-endian counter (bytes 0..7) followed by four zero bytes. The
+plaintext is a **raw IPv4 packet** as read from the TUN device. The AEAD is called with
+`additionalData = nil`. See [Replay protection & nonces](#replay-protection--nonces) for how
+the counter is validated.
 
 ### KeepAlive (0x04)
 
@@ -565,9 +581,11 @@ ciphertext. `Decaps(DK, ct) -> ss` recovers the same 32-byte shared secret.
 3. Computes `ss1 = Decaps(DK_server, ct1)`. Failure means the client used the wrong server
    public key.
 4. Computes `Encaps(EK_client) -> (ss2, ct2)`.
-5. Derives `K = HKDF-SHA256(ikm = ss1 || ss2, salt = nil, info = version, L = 32)`.
-6. Stores the peer keyed by both its UDP source address (data path) and its virtual IP
-   (routing table). Any previous session for the same virtual IP is evicted.
+5. Derives both directional keys from `ikm = ss1 || ss2` (salt `nil`, `L = 32`):
+   `Kc2s = HKDF-SHA256(ikm, "c2s")` and `Ks2c = HKDF-SHA256(ikm, "s2c")`.
+6. Stores the peer (with zeroed send/receive counters) keyed by both its UDP source address
+   (data path) and its virtual IP (routing table). Any previous session for the same virtual
+   IP is evicted.
 7. Sends `ServerHello { publicData = ct2 }`.
 
 ### Step 3 — client processes `ServerHello`
@@ -577,15 +595,16 @@ ciphertext. `Decaps(DK, ct) -> ss` recovers the same 32-byte shared secret.
 2. Verifies the source address matches the expected server endpoint.
 3. Decodes `ServerHello`, computes `ss2 = Decaps(DK_client, ct2)`. Failure means the server
    used the wrong client public key.
-4. Derives the **same** `K = HKDF-SHA256(ss1 || ss2, nil, version, 32)`.
-5. Initializes ChaCha20-Poly1305 with `K`. Tunnel is now ready.
+4. Derives the **same** `Kc2s` and `Ks2c` from `ss1 || ss2` (info `"c2s"` / `"s2c"`).
+5. Zeroes its send/receive counters, then initializes ChaCha20-Poly1305 for each direction.
+   Tunnel is now ready.
 
 ### Authentication property
 
 Because `ss1` can only be recovered with `DK_server` and `ss2` only with `DK_client`, only
-the legitimate holders of both private keys can derive `K`. An attacker holding *one* of
-the two keys still cannot. There are no signatures and no certificates — authentication is
-a side-effect of mutual key encapsulation.
+the legitimate holders of both private keys can derive the session keys. An attacker holding
+*one* of the two keys still cannot. There are no signatures and no certificates —
+authentication is a side-effect of mutual key encapsulation.
 
 ### Re-handshake
 
@@ -596,10 +615,11 @@ The client re-runs the handshake when **any** of these happen:
 - `WriteTo` fails when sending an encrypted data packet.
 - A keepalive ACK reports the session is no longer valid.
 
-On a re-handshake the client clears its cipher (the reader/writer goroutines pause until
-the new key is installed) and sends a fresh `ClientHello`. The server treats a new
-`ClientHello` as authoritative: if the same virtual IP was mapped to a different UDP
-address, the old mapping is dropped.
+On a re-handshake the client clears its keys (the reader/writer goroutines pause until the
+new keys are installed), **resets both nonce counters to zero**, and sends a fresh
+`ClientHello`. The server treats a new `ClientHello` as authoritative: it builds a new
+session with fresh keys and zeroed counters, and if the same virtual IP was mapped to a
+different UDP address, the old mapping is dropped.
 
 ### Porting a client to another language
 
@@ -622,15 +642,17 @@ loop {
     ct2 = resp[1..1089]
     ss2 = MLKEM768.decaps(DK_client, ct2)
     ikm = ss1 || ss2                                     // 64 B
-    K   = HKDF_SHA256(ikm, salt=null, info=VERSION, 32)  // 32 B — VERSION must match server
-    aead = ChaCha20Poly1305(K)
+    Kc2s = HKDF_SHA256(ikm, salt=null, info="c2s", 32)   // client -> server key
+    Ks2c = HKDF_SHA256(ikm, salt=null, info="s2c", 32)   // server -> client key
+    send_ctr = 0; recv_hwm = 0                           // reset before using the new keys
     wait(min(300 s, until cipher_failure))
 }
 
 // data: TUN -> network
 on_tun_packet(p):
-    nonce = secure_random(12)
-    ct    = aead.seal(nonce, plaintext=p, aad=null)      // tag appended
+    send_ctr += 1
+    nonce = uint64_be(send_ctr) || 0x00000000            // 8-byte counter + 4 zero bytes
+    ct    = ChaCha20Poly1305(Kc2s).seal(nonce, plaintext=p, aad=null)
     send(socket, serverAddr, [0x03] || nonce || ct)
 
 // data: network -> TUN
@@ -638,7 +660,11 @@ on_udp_packet(buf, src):
     if src != serverAddr: drop
     if buf[0] == 0x04: handle_keepalive(buf); return
     if buf[0] != 0x03 || buf.length < 1+12+16: drop
-    pt = aead.open(buf[1..13], buf[13..], aad=null)      // on failure -> rehandshake
+    nonce   = buf[1..13]
+    counter = uint64_be(nonce[0..8])
+    if counter <= recv_hwm: drop                         // replay / out-of-order
+    pt = ChaCha20Poly1305(Ks2c).open(nonce, buf[13..], aad=null)  // on failure -> rehandshake
+    recv_hwm = counter                                   // only after the tag verifies
     tun.write(pt)
 
 // keepalive (every 25 s while a session exists)
@@ -647,8 +673,10 @@ send(socket, serverAddr, [0x04, 0x05, rnd, rnd, rnd])    // SYN, expect [0x04,0x
 
 Platform notes (e.g. Android):
 
-- `VERSION` (the HKDF `info`) must match the server's `version` context value exactly.
-- Use a cryptographically secure RNG for the 12-byte per-packet nonce — never a counter.
+- The HKDF `info` strings (`"c2s"`, `"s2c"`) and the counter-nonce layout must match the
+  server exactly, and you must run the same ownvpn protocol version on both ends.
+- The nonce is a per-direction monotonic counter, **not** random — reset it to zero on every
+  re-handshake, and never let it repeat under the same key.
 - ML-KEM-768 is in `java.security.KeyPairGenerator` as of JDK 24 (`"ML-KEM"`); on Android
   use BouncyCastle (`bcprov` ≥ 1.78 exposes `MLKEM`).
 - On Android the TUN device comes from `VpnService`; its `ParcelFileDescriptor` plays the
@@ -760,12 +788,24 @@ GOOS=linux GOARCH=arm GOARM=7 go build -o ownvpn_armv7 ./examples/sample_client
 - **Post-quantum only, no hybrid.** Authentication and confidentiality rest entirely on
   ML-KEM-768. There is no classical (X25519/RSA) layer, so there is no fallback if a flaw
   is found in ML-KEM. This is a deliberate design choice, not an oversight.
-- **No replay protection.** Data packets carry a random nonce but no sequence number or
-  replay window; a captured ciphertext can be re-injected until the session key rotates.
-- **No per-packet authentication of source beyond the session key.** Once a peer's UDP
-  source address is bound during the handshake, data packets are trusted by address + AEAD.
-- **Metadata.** Packet sizes and timing are not padded (beyond the 3 keepalive bytes);
-  traffic analysis is possible.
+- **No forward secrecy.** Both shared secrets come from encapsulating to *static* keys, so
+  the per-handshake randomness lives inside the recorded ciphertexts. An attacker who records
+  traffic and later obtains **both** the server's and a peer's private keys can recover that
+  peer's past session keys. WireGuard-style ephemeral key exchange would fix this; ownvpn
+  does not have it.
+- **Replay protection is a single high-water mark, not a sliding window.** Replays are
+  rejected (see [Replay protection & nonces](#replay-protection--nonces)), but genuinely
+  out-of-order packets are dropped rather than accepted within a window.
+- **No inner-source-IP filtering.** The server routes on the decrypted packet's *destination*
+  and does not verify that its *source* matches the sending peer's assigned virtual IP, so an
+  authenticated peer can spoof another peer's virtual IP. There is no WireGuard-style
+  cryptokey-routing check.
+- **Handshake commits state before key confirmation.** A well-formed `ClientHello` for a
+  known peer name replaces that peer's session mapping before the initiator proves it can
+  derive the keys, so an attacker who knows a valid peer *name* can knock a peer off the
+  routing table until its next re-handshake (a DoS, not a compromise).
+- **Metadata.** Packet sizes and timing are not padded (beyond the 3 keepalive bytes), and
+  fixed message types / 1088-byte handshakes are trivially fingerprintable by DPI.
 - **Keys are plaintext** in the config structs/JSON — protect them at rest (file perms,
   secrets manager) yourself; ownvpn does not encrypt them.
 - **Single server instance per process** (package-level state) — run multiple hubs in
