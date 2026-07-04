@@ -185,6 +185,9 @@ func DisablePeer(name string) {
 }
 
 func MarshalPeerSettings() ([]byte, error) {
+	allowedPeersMu.RLock()
+	defer allowedPeersMu.RUnlock()
+
 	cfg.Peers = nil
 	cfg.Peers = make([]config.PeerConfig, 0, len(allowedPeers))
 
