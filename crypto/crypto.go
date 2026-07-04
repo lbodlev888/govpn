@@ -9,34 +9,32 @@ import (
 	"log"
 )
 
-func GeneratePrivate() {
+func GeneratePrivate() (string, error) {
 	decaps, err := mlkem.GenerateKey768()
 	if err != nil {
-		log.Println("Could not generate decaps key: " + err.Error())
-		return
+		log.Println()
+		return "", fmt.Errorf("Could not generate decaps key: %w", err)
 	}
 
-	base64_decaps := base64.StdEncoding.EncodeToString(decaps.Bytes())
-
-	fmt.Printf("Private: %s\n", base64_decaps)
+	return base64.StdEncoding.EncodeToString(decaps.Bytes()), nil
 }
 
-func GetPublicKey(pubKey string) {
+func GetPublicKey(pubKey string) (string, error) {
 	raw_decaps, err := base64.StdEncoding.DecodeString(pubKey)
 	if err != nil {
-		log.Println("Could not decode private key: " + err.Error())
-		return
+		log.Println()
+		return "", fmt.Errorf("Could not decode private key: %w", err)
 	}
 
 	decaps, err := mlkem.NewDecapsulationKey768(raw_decaps)
 	if err != nil {
-		log.Println("Could not import private key: " + err.Error())
-		return
+		log.Println()
+		return "", fmt.Errorf("Could not import private key: %w", err)
 	}
 
 	encaps := decaps.EncapsulationKey().Bytes()
 
-	fmt.Printf("Public: %s\n", base64.StdEncoding.EncodeToString(encaps))
+	return base64.StdEncoding.EncodeToString(encaps), nil
 }
 
 func ParseDecapsKey(decaps_str string) (*mlkem.DecapsulationKey768, error) {
