@@ -31,11 +31,11 @@ func SetupInterface(localAddr string) (*water.Interface, error) {
 	return iface, nil
 }
 
-func SetupFullTunnel(endpoint string) error {
-	err := runIP("route", "add", "0.0.0.0/1", "dev", "bvpn0")
+func SetupFullTunnel(endpoint, ifaceName string) error {
+	err := runIP("route", "add", "0.0.0.0/1", "dev", ifaceName)
 	if err != nil { return err }
 
-	err = runIP("route", "add", "128.0.0.0/1", "dev", "bvpn0")
+	err = runIP("route", "add", "128.0.0.0/1", "dev", ifaceName)
 	if err != nil { return err }
 
 	ip, err := gateway.DiscoverGateway()

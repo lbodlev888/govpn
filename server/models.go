@@ -1,10 +1,16 @@
 package server
 
-import "net"
+import (
+	"net"
+	"sync/atomic"
+)
 
 type peer struct {
 	Addr       *net.UDPAddr
 	VirtualIP  net.IP
-	SessionKey []byte
 	disabled bool
+	c2sKey []byte
+	s2cKey []byte
+	lastNonceOut atomic.Uint64
+	lastNonceIn uint64
 }

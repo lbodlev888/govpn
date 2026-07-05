@@ -2,13 +2,13 @@ package client
 
 import (
 	"context"
-	"crypto/cipher"
-	"crypto/rand"
+	"encoding/binary"
 	"fmt"
 	"log"
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/lbodlev888/ownvpn/config"
@@ -24,9 +24,9 @@ const (
 )
 
 func Run(ctx context.Context, cfg config.PeerConfig) {
-	var aead cipher.AEAD
 	cipherChan := make(chan struct{})
-	encryptionKey := make([]byte, chacha20poly1305.KeySize)
+	var s2cKeyA, c2sKeyA atomic.Pointer[[chacha20poly1305.KeySize]byte]
+	var lastNonceIn, lastNonceOut atomic.Uint64
 
 	if cfg.Endpoint == "" {
 		log.Println("Missing endpoint. Cant connect to nobody")
@@ -45,7 +45,7 @@ func Run(ctx context.Context, cfg config.PeerConfig) {
 				log.Println(err)
 			}
 		}()
-		err := tunif.SetupFullTunnel(strings.Split(cfg.Endpoint, ":")[0])
+		err := tunif.SetupFullTunnel(strings.Split(cfg.Endpoint, ":")[0], iface.Name())
 		if err != nil {
 			log.Println("Failed to setup full tunnel")
 			return
@@ -89,7 +89,11 @@ func Run(ctx context.Context, cfg config.PeerConfig) {
 				return
 			}
 
-			aead = nil
+			s2cKeyA.Store(nil)
+			c2sKeyA.Store(nil)
+			lastNonceIn.Store(0) 
+			lastNonceOut.Store(0)
+
 			log.Println("Re-handshaking...")
 
 			sharedKey1, ciphertext := encaps.Encapsulate()
@@ -135,23 +139,26 @@ func Run(ctx context.Context, cfg config.PeerConfig) {
 		
 			final_key := append(sharedKey1, sharedKey2...)
 		
-			infoString, ok := ctx.Value("version").(string)
-			if !ok {
-				log.Fatalln("Missing ownvpn version key in context")
-			}
-		
-			encryptionKey, err = crypto.DeriveEncryptionKey(final_key, nil, infoString, chacha20poly1305.KeySize)
+			c2sKey, err := crypto.DeriveEncryptionKey(final_key, nil, "c2s", chacha20poly1305.KeySize)
 			if err != nil {
 				log.Println("Could not derive encryption key: " + err.Error())
 				continue
 			}
-		
-			log.Println("Latest handshake " + time.Now().Format(time.RFC1123))
-			aead, err = chacha20poly1305.New(encryptionKey)
+			var k1 [chacha20poly1305.KeySize]byte
+			copy(k1[:], c2sKey)
+			c2sKeyA.Store(&k1)
+
+			s2cKey, err := crypto.DeriveEncryptionKey(final_key, nil, "s2c", chacha20poly1305.KeySize)
 			if err != nil {
-				log.Println("Failed to init cipher: " + err.Error())
+				log.Println("Could not derive encryption key: " + err.Error())
 				continue
 			}
+			var k2 [chacha20poly1305.KeySize]byte
+			copy(k2[:], s2cKey)
+			s2cKeyA.Store(&k2)
+		
+			log.Println("Latest handshake " + time.Now().Format(time.RFC1123))
+			
 			select {
 			case <-ctx.Done():
 				return
@@ -177,8 +184,8 @@ func Run(ctx context.Context, cfg config.PeerConfig) {
 			case <-time.After(25 * time.Second):
 			}
 
-			//even if here we do not encrypt we dont need to send keepalives if session isnt initiated
-			if aead == nil {
+			//even if here we do not encrypt we dont need to send keepalives if session isnt initialized
+			if c2sKeyA.Load() == nil || s2cKeyA.Load() == nil {
 				continue
 			}
 
@@ -195,7 +202,7 @@ func Run(ctx context.Context, cfg config.PeerConfig) {
 		for {
 			if ctx.Err() != nil {
 				break
-			} else if aead == nil {
+			} else if s2cKeyA.Load() == nil {
 				<-time.After(100 * time.Millisecond)
 				continue
 			}
@@ -206,7 +213,7 @@ func Run(ctx context.Context, cfg config.PeerConfig) {
 				continue
 			}
 
-			if aead == nil || n < 1 || src.String() != serverAddr.String() {
+			if s2cKeyA.Load() == nil || n < 1 || src.String() != serverAddr.String() {
 				continue
 			}
 
@@ -214,7 +221,8 @@ func Run(ctx context.Context, cfg config.PeerConfig) {
 				keepaliveStatus := proto.DecodeKeepAlive(buf[:n], proto.MsgKeepAliveACK)
 				log.Printf("Received keepalive. Status: %t\n", keepaliveStatus)
 				if !keepaliveStatus {
-					aead = nil
+					c2sKeyA.Store(nil)
+					s2cKeyA.Store(nil)
 					cipherChan <- struct{}{}
 				}
 				continue
@@ -232,13 +240,32 @@ func Run(ctx context.Context, cfg config.PeerConfig) {
 			nonce := payload[:chacha20poly1305.NonceSize]
 			ciphertext := payload[chacha20poly1305.NonceSize:]
 
+			currentNonceIn := binary.BigEndian.Uint64(nonce)
+			if currentNonceIn <= lastNonceIn.Load() {
+				log.Println("Possible replay attack. Dropping packet")
+				continue
+			}
+
+			k := s2cKeyA.Load()
+			if k == nil {
+				continue
+			}
+
+			aead, err := chacha20poly1305.New(k[:])
+			if err != nil {
+				log.Println("Failed to init aead cipher: " + err.Error())
+				continue
+			}
+
 			frame, err := aead.Open(nil, nonce, ciphertext, nil)
 			if err != nil {
 				log.Println("Invalid encrypted frame: " + err.Error())
-				aead = nil
+				s2cKeyA.Store(nil)
+				c2sKeyA.Store(nil)
 				cipherChan <- struct{}{}
 				continue
 			}
+			lastNonceIn.Store(currentNonceIn)
 
 			iface.Write(frame)
 		}
@@ -248,7 +275,7 @@ func Run(ctx context.Context, cfg config.PeerConfig) {
 	for {
 		if ctx.Err() != nil {
 			break
-		} else if aead == nil {
+		} else if c2sKeyA.Load() == nil {
 			<-time.After(100 * time.Millisecond)
 			continue
 		}
@@ -259,22 +286,35 @@ func Run(ctx context.Context, cfg config.PeerConfig) {
 			continue
 		}
 
-		if aead == nil {
+		if c2sKeyA.Load() == nil {
 			continue
 		}
 
 		nonce := make([]byte, chacha20poly1305.NonceSize)
-		rand.Read(nonce)
+		n := lastNonceOut.Add(1)
+		binary.BigEndian.PutUint64(nonce, n)
 
 		out := make([]byte, 0, 1 + len(nonce) + plen + chacha20poly1305.Overhead)
 		out = append(out, proto.MsgData)
 		out = append(out, nonce...)
 
+		k := c2sKeyA.Load()
+		if k == nil {
+			continue
+		}
+
+		aead, err := chacha20poly1305.New(k[:])
+		if err != nil {
+			log.Println("Failed to init aead cipher: " + err.Error())
+			continue
+		}
+
 		out = aead.Seal(out, nonce, packet[:plen], nil)
 
 		if _, err := conn.WriteTo(out, serverAddr); err != nil {
 			log.Println("Failed to write packet: " + err.Error())
-			aead = nil
+			s2cKeyA.Store(nil)
+			c2sKeyA.Store(nil)
 			cipherChan <- struct{}{}
 			continue
 		}

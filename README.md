@@ -1,12 +1,47 @@
 # ownvpn
 
-A minimal, post-quantum VPN written from scratch in Go. Peers talk over UDP through a
-central hub server; all traffic is authenticated and encrypted with keys derived from a
-ML-KEM-768 (FIPS 203) handshake. There is no classical key-exchange fallback — the
-whole construction is post-quantum.
+A minimal, **post-quantum VPN library** written from scratch in Go. Peers talk over UDP
+through a central hub server; all traffic is authenticated and encrypted with keys
+derived from an ML-KEM-768 (FIPS 203) handshake. There is no classical key-exchange
+fallback — the whole construction is post-quantum.
 
-This README documents the wire protocol and handshake precisely enough that
-a client can be re-implemented from scratch in any other language for any other platform.
+ownvpn started life as a single client/server binary. It is now a **library**: the tunnel
+data-plane, the hub server, the crypto, the wire codec and the TUN plumbing are all
+exposed as importable Go packages, so you can embed an encrypted overlay network directly
+into your own application (a CLI, a daemon, a management server, a mobile control plane,
+etc.). The former standalone binary now lives under [`examples/sample_client`](examples/sample_client)
+as a reference implementation you can copy from.
+
+This README documents two things:
+
+1. **How to use ownvpn as a library** — the public API of each package (the new focus).
+2. **How the protocol works** — the wire format and handshake, precise enough to
+   re-implement a client from scratch in any other language or platform.
+
+---
+
+## Contents
+
+- [Features](#features)
+- [Installation](#installation)
+- [Quick start (as a library)](#quick-start-as-a-library)
+- [API reference](#api-reference)
+  - [`crypto` — key generation & derivation](#crypto--key-generation--derivation)
+  - [`config` — configuration structs](#config--configuration-structs)
+  - [`server` — the hub](#server--the-hub)
+  - [`client` — the peer](#client--the-peer)
+  - [`tunif` — TUN device & routing](#tunif--tun-device--routing)
+  - [`proto` — wire codec](#proto--wire-codec)
+- [Replay protection & nonces](#replay-protection--nonces)
+- [Reference CLI (`examples/sample_client`)](#reference-cli-examplessample_client)
+- [Repository layout](#repository-layout)
+- [Wire protocol](#wire-protocol)
+- [Handshake](#handshake)
+- [Data path](#data-path)
+- [Full tunnel](#full-tunnel)
+- [Requirements & build](#requirements--build)
+- [Security notes & limitations](#security-notes--limitations)
+- [License](#license)
 
 ---
 
@@ -15,49 +50,441 @@ a client can be re-implemented from scratch in any other language for any other 
 - **Post-quantum key exchange.** Two-message ML-KEM-768 handshake. Each side encapsulates
   to the other's static public key, so both ciphertexts contribute entropy to the final
   session secret. There is no Diffie–Hellman, no RSA, no X25519.
-- **Mutual authentication.** The server only accepts peers whose `name` is listed in its
-  config and whose static ML-KEM-768 public key matches. Decapsulation only succeeds for
-  the holder of the matching private key, so the handshake authenticates both sides.
-- **Authenticated encryption for data.** ChaCha20-Poly1305 AEAD on every data packet
-  with a per-packet random 12-byte nonce. Tag length is 16 bytes (Poly1305 default).
-- **HKDF key derivation.** Session key derived with HKDF-SHA256 from the concatenation
-  of both shared secrets, salted with `nil` and using the protocol version string
-  (e.g. `ownvpn0.0.4`) as the `info` parameter.
-- **Hub topology with IP-based routing.** The server inspects the destination IPv4
-  address of the decrypted inner packet and either delivers it to its own TUN interface
-  or re-encrypts and forwards it to the matching peer. Packets addressed to something
-  that is neither the server nor a known peer are handed to the server's TUN device, so
-  with host-side NAT the server can act as an internet gateway (see **Full tunnel**).
-- **Optional full tunnel.** A client whose config sets `"fulltunnel": true` automatically
-  routes the machine's *entire* network traffic through the encrypted tunnel and restores
-  the original routing table on exit — no manual `ip route` juggling required.
-- **Automatic re-handshake.** The client renegotiates the session key every 3 minutes,
-  and immediately whenever encryption or decryption fails (so a corrupted/replayed
-  packet does not poison the cipher state).
+- **Mutual authentication.** The server only accepts peers whose `name` is registered and
+  whose static ML-KEM-768 public key matches. Decapsulation only succeeds for the holder
+  of the matching private key, so the handshake authenticates both sides.
+- **Authenticated encryption for data.** ChaCha20-Poly1305 AEAD on every data packet with
+  a 12-byte nonce (16-byte Poly1305 tag). The nonce is a per-session monotonic counter.
+- **Replay protection.** Each direction carries a strictly-increasing 64-bit counter in the
+  nonce; the receiver keeps a high-water mark and drops any packet whose counter is not
+  greater than the highest already accepted. Counters reset on every re-handshake.
+- **Directional keys.** Two separate ChaCha20-Poly1305 keys are derived per session with
+  HKDF-SHA256 over the concatenation of both shared secrets — one for client→server
+  (`info = "c2s"`) and one for server→client (`info = "s2c"`) — so the two directions never
+  share a key or a nonce space.
+- **Hub topology with IP-based routing.** The server inspects the destination IPv4 address
+  of each decrypted inner packet and either delivers it locally or re-encrypts and
+  forwards it to the matching peer.
+- **Runtime peer management.** Add, remove, enable and disable peers on a running server
+  and export the current peer set back to JSON — no restart required.
+- **Optional full tunnel.** A client whose config sets `"fulltunnel": true` routes the
+  machine's *entire* traffic through the tunnel and restores the routing table on exit.
+- **Automatic re-handshake.** The client renegotiates the session key every 5 minutes, and
+  immediately whenever encryption or decryption fails.
 - **Keep-alive with SYN/ACK.** The client sends a 5-byte keepalive every 25 seconds to
-  hold the NAT mapping open; the server responds with an ACK variant.
-- **TUN interface.** Uses the `songgao/water` library to allocate a TUN device named
-  `bvpn0`; the IP, subnet and MTU (1420) are configured with the `ip` command.
-- **Stateless server reads.** UDP packets are dispatched by their first byte (message
-  type) and the source address is used as the peer identity once the handshake is done.
-- **Single static binary.** No external services, no certificate authority, no PKI;
-  keys are 32-line base64 strings stored in a JSON config.
-- **Cross-compilable.** A prebuilt `ownvpn_armv7` is checked in alongside the `ownvpn`
-  Linux/amd64 binary.
+  hold NAT mappings open; the server responds with an ACK variant.
+- **Context-driven lifecycle.** Both `client.Run` and `server.Run` block until the
+  `context.Context` you pass them is cancelled, then tear down cleanly.
+- **No PKI.** No certificate authority, no TLS, no external services — just base64 keys in
+  a struct you populate however you like.
+
+---
+
+## Installation
+
+```sh
+go get github.com/lbodlev888/ownvpn@latest
+```
+
+Then import the packages you need:
+
+```go
+import (
+    "github.com/lbodlev888/ownvpn/client"
+    "github.com/lbodlev888/ownvpn/config"
+    "github.com/lbodlev888/ownvpn/crypto"
+    "github.com/lbodlev888/ownvpn/server"
+)
+```
+
+Requires **Go 1.26+** (uses the standard-library `crypto/mlkem` and `crypto/hkdf`
+packages) and **Linux** with root / `CAP_NET_ADMIN` at runtime (to create the TUN device
+and run `ip`).
+
+---
+
+## Quick start (as a library)
+
+### 1. Generate keys
+
+Every peer and the server needs its own ML-KEM-768 keypair.
+
+```go
+priv, _ := crypto.GeneratePrivate()      // base64 private (decapsulation) key
+pub, _  := crypto.GetPublicKey(priv)     // base64 public (encapsulation) key
+```
+
+### 2. Run a hub server
+
+```go
+package main
+
+import (
+    "context"
+    "os"
+    "os/signal"
+
+    "github.com/lbodlev888/ownvpn/config"
+    "github.com/lbodlev888/ownvpn/server"
+)
+
+func main() {
+    ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+    defer stop()
+
+    cfg := config.ServerConfig{
+        DecapsKey:   "<server private key>",
+        BindAddress: "0.0.0.0:62789",
+        VirtualIP:   "10.20.0.1",
+        Subnet:      24,
+        Peers: []config.PeerConfig{
+            {
+                Name:      "laptop",
+                EncapsKey: "<laptop public key>",
+                VirtualIP: "10.20.0.3",
+            },
+        },
+    }
+
+    if err := server.Init(cfg); err != nil {   // creates TUN, binds UDP, imports keys
+        panic(err)
+    }
+    server.Run(ctx)                             // blocks until ctx is cancelled
+}
+```
+
+### 3. Run a client (peer)
+
+```go
+package main
+
+import (
+    "context"
+    "os"
+    "os/signal"
+
+    "github.com/lbodlev888/ownvpn/client"
+    "github.com/lbodlev888/ownvpn/config"
+)
+
+func main() {
+    ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+    defer stop()
+
+    cfg := config.PeerConfig{
+        Name:       "laptop",
+        DecapsKey:  "<laptop private key>",
+        EncapsKey:  "<server public key>",
+        VirtualIP:  "10.20.0.3",
+        Subnet:     24,
+        Endpoint:   "203.0.113.10:62789",
+        FullTunnel: false,
+    }
+
+    client.Run(ctx, cfg)                        // blocks until ctx is cancelled
+}
+```
+
+> **Note:** the client and server must run the same ownvpn version. The HKDF `info` strings
+> (`"c2s"`/`"s2c"`) and the packet framing are fixed in code; there is no negotiated version
+> field, so mismatched builds that change either will simply fail to decrypt each other's
+> packets.
+
+---
+
+## API reference
+
+### `crypto` — key generation & derivation
+
+```go
+func GeneratePrivate() (string, error)
+```
+Generates a fresh ML-KEM-768 decapsulation (private) key and returns it base64-encoded.
+
+```go
+func GetPublicKey(privKey string) (string, error)
+```
+Derives the encapsulation (public) key from a base64 private key and returns it base64-encoded.
+
+```go
+func ParseDecapsKey(s string) (*mlkem.DecapsulationKey768, error)
+func ParseEncapsKey(s string) (*mlkem.EncapsulationKey768, error)
+```
+Decode a base64 key string into the corresponding `crypto/mlkem` key type. Used internally
+by `server`/`client`; exposed for callers that want to validate keys ahead of time.
+
+```go
+func DeriveEncryptionKey(material, salt []byte, infoString string, length int) ([]byte, error)
+```
+Thin wrapper over `hkdf.Key(sha256.New, ...)`. ownvpn calls it twice per session —
+`DeriveEncryptionKey(ss1||ss2, nil, "c2s", 32)` and `DeriveEncryptionKey(ss1||ss2, nil, "s2c", 32)`
+— to derive the two directional 32-byte ChaCha20-Poly1305 keys. Exposed so a
+re-implementation can reproduce the exact derivation.
+
+### `config` — configuration structs
+
+These are plain structs with JSON tags; construct them in code or unmarshal them from a
+file — ownvpn does no file I/O itself.
+
+```go
+type PeerConfig struct {
+    Name       string `json:"name"`
+    DecapsKey  string `json:"privkey,omitempty"`   // this peer's private key (client side)
+    EncapsKey  string `json:"pubkey"`              // client: server's pubkey; server: peer's pubkey
+    VirtualIP  string `json:"virtual_ip"`
+    Subnet     int    `json:"subnet,omitempty"`
+    Endpoint   string `json:"endpoint,omitempty"`  // "host:port" of the server (client only)
+    FullTunnel bool   `json:"fulltunnel,omitempty"`// route all traffic through the tunnel
+    Disabled   bool   `json:"disabled,omitempty"`  // server-side: reject this peer's handshakes
+}
+
+type ServerConfig struct {
+    DecapsKey   string       `json:"privkey"`
+    BindAddress string       `json:"bind_address"` // "host:port" to listen on (UDP)
+    VirtualIP   string       `json:"virtual_ip"`
+    Subnet      int          `json:"subnet"`
+    Peers       []PeerConfig `json:"peers"`
+}
+```
+
+Note the dual meaning of `EncapsKey`/`pubkey`: on a **client** config it holds the
+**server's** public key; inside a server's `Peers` list it holds **that peer's** public key.
+
+### `server` — the hub
+
+The server is a **package-level singleton**: it keeps its keys, TUN interface, UDP socket
+and peer tables in package globals, so you run **one server per process**. All functions
+below operate on that single instance and are safe for concurrent use (guarded by internal
+mutexes).
+
+```go
+func Init(cfg config.ServerConfig) error
+```
+Imports the server private key, loads the allowed peers from `cfg.Peers`, creates the TUN
+interface (`cfg.VirtualIP/cfg.Subnet`) and binds the UDP socket (`cfg.BindAddress`). Call
+once before `Run`.
+
+```go
+func Run(ctx context.Context)
+```
+Starts the read loops (UDP ⇄ TUN) and **blocks** until `ctx` is cancelled, at which point
+it closes the interface and socket and returns.
+
+```go
+func NewPeer(peer config.PeerConfig) error
+```
+Registers a peer on the running server. Validates the peer's `EncapsKey`; returns an error
+if the key is not a valid ML-KEM-768 public key. Idempotent by `Name` (re-registering a
+name overwrites it).
+
+```go
+func RemovePeer(name string)
+```
+Removes a peer by name and evicts any live session it holds (both the virtual-IP and
+source-address routing entries).
+
+```go
+func EnablePeer(name string)
+func DisablePeer(name string)
+```
+Toggle a peer's `Disabled` state. A disabled peer's handshakes are rejected and its live
+session (if any) stops forwarding immediately. Enabling reverses both.
+
+```go
+func GetAllPeers() []config.PeerConfig
+```
+Returns a snapshot of every registered peer (for building a management/status API).
+
+```go
+func MarshalPeerSettings() ([]byte, error)
+```
+Serializes the current server config **including the live peer set** back to JSON — use it
+to persist runtime peer changes (adds/removes/enable/disable) so they survive a restart.
+
+**Typical management flow:**
+
+```go
+server.Init(cfg)
+go server.Run(ctx)
+
+// later, in response to your admin API:
+server.NewPeer(config.PeerConfig{Name: "phone", EncapsKey: pub, VirtualIP: "10.20.0.4"})
+server.DisablePeer("laptop")
+peers := server.GetAllPeers()
+
+// persist the new state:
+data, _ := server.MarshalPeerSettings()
+os.WriteFile("/etc/ownvpn/server.json", data, 0600)
+```
+
+### `client` — the peer
+
+```go
+func Run(ctx context.Context, cfg config.PeerConfig)
+```
+The entire client data-plane in one blocking call. It creates the TUN device, optionally
+sets up the full tunnel, performs the handshake, and runs four goroutines (handshake loop,
+keepalive, network→TUN reader, TUN→network writer). It returns when `ctx` is cancelled and
+cleans up its interface/socket (and full-tunnel routes) on the way out.
+
+Unlike the server, the client is **not** a singleton — you can run multiple `client.Run`
+calls concurrently (each gets its own TUN device, auto-named `bvpn%d`), though each still
+needs `CAP_NET_ADMIN`.
+
+### `tunif` — TUN device & routing
+
+Low-level helpers, normally called for you by `server`/`client`. Exposed if you build a
+custom data-plane.
+
+```go
+func SetupInterface(localAddr string) (*water.Interface, error) // create+configure a TUN ("cidr" e.g. "10.20.0.3/24")
+func SetupFullTunnel(endpoint string) error                     // add default routes via the TUN, pin endpoint via real gw
+func ClearFullTunnel(endpoint string) error                     // remove the pinned endpoint host route
+```
+The TUN device is named `bvpn%d` (first is `bvpn0`) and set to MTU 1420. Routing is
+performed by shelling out to the `ip` command (Linux).
+
+### `proto` — wire codec
+
+Message-type constants and encode/decode functions for every packet on the wire. You only
+need this package if you are re-implementing an endpoint or debugging the protocol; the
+full format is documented in [Wire protocol](#wire-protocol).
+
+```go
+const (
+    MsgClientHello  byte = 0x01
+    MsgServerHello  byte = 0x02
+    MsgData         byte = 0x03
+    MsgKeepAlive    byte = 0x04
+    MsgKeepAliveSYN byte = 0x05
+    MsgKeepAliveACK byte = 0x06
+
+    MLKEM768CiphertextLen = 1088
+    MaxNameLen            = 255
+)
+
+type ClientHello struct { Name string; PublicData []byte }
+type ServerHello struct { PublicData []byte }
+
+func EncodeClientHello(ClientHello) ([]byte, error)
+func DecodeClientHello([]byte) (ClientHello, error)
+func EncodeServerHello(ServerHello) ([]byte, error)
+func DecodeServerHello([]byte) (ServerHello, error)
+func EncodeKeepAlive(flag byte) []byte
+func DecodeKeepAlive(buf []byte, expectedFlag byte) bool
+```
+
+---
+
+## Replay protection & nonces
+
+The 12-byte ChaCha20-Poly1305 nonce is **not random** — it is a per-session monotonic
+counter. The counter is written big-endian into the first 8 bytes of the nonce (the
+remaining 4 bytes are zero), so it is really a 64-bit sequence number.
+
+**Two directions, two keys, two counters.** Each session derives independent keys for
+client→server (`info = "c2s"`) and server→client (`info = "s2c"`), and each direction has
+its own send counter and its own receive high-water mark. This guarantees a `(key, nonce)`
+pair is never reused across directions.
+
+**How a receiver rejects replays.** For every inbound data packet the receiver reads the
+64-bit counter and compares it to the highest value it has already accepted on that
+direction:
+
+```
+if counter <= highWaterMark:   drop  (replay / out-of-order)
+else after successful decrypt:  highWaterMark = counter
+```
+
+The high-water mark is only advanced **after** the AEAD tag verifies, so an attacker cannot
+lock a peer out by injecting a forged packet with a huge counter.
+
+**Counters reset on every re-handshake.** Because a fresh session key is derived each
+handshake (every 5 minutes, or on any cipher failure), both the send counter and the
+receive high-water mark restart at zero, and the new key makes the reused low counters safe.
+On the server a re-handshake creates a brand-new session object, so its counters start at
+zero automatically; the client zeroes its counters *before* publishing the new keys.
+
+**Known limitation — strict ordering.** This is a single high-water mark, not a sliding
+window (RFC 6479). It is simple and safe, but any packet that arrives *out of order* looks
+like a replay and is dropped, causing an upper-layer retransmit. UDP reordering is usually
+rare on a path, so in practice this is fine; if it ever becomes a throughput problem, a
+small sliding-window bitmap is the standard upgrade.
+
+---
+
+## Reference CLI (`examples/sample_client`)
+
+The original standalone binary is preserved as a worked example that wires the library
+packages together: it parses flags, reads a JSON config, and dispatches to `server.Run` or
+`client.Run`. Read it as the canonical "how do I glue these packages together" reference —
+see [`examples/sample_client/main.go`](examples/sample_client/main.go).
+
+Build and use it directly:
+
+```sh
+go build -o ownvpn ./examples/sample_client
+
+# key management
+./ownvpn -genkey                 # print a new private key
+./ownvpn -pubkey <private-key>   # print the matching public key
+
+# run
+sudo ./ownvpn -server -config server.json
+sudo ./ownvpn        -config peer.json
+```
+
+| Flag           | Applies to | Description                                                  |
+|----------------|------------|--------------------------------------------------------------|
+| `-server`      | both       | Run in server (hub) mode instead of client mode.             |
+| `-config FILE` | both       | Path to the JSON config (default `/etc/ownvpn/config.json`). |
+| `-genkey`      | —          | Generate and print a new ML-KEM-768 private key, then exit.  |
+| `-pubkey KEY`  | —          | Print the public key for the given private key, then exit.   |
+
+**Example peer config** (`peer.json`):
+
+```json
+{
+  "name": "laptop",
+  "privkey": "<this peer's private key>",
+  "pubkey":  "<server's public key>",
+  "virtual_ip": "10.20.0.3",
+  "subnet": 24,
+  "endpoint": "203.0.113.10:62789",
+  "fulltunnel": false
+}
+```
+
+**Example server config** (`server.json`):
+
+```json
+{
+  "privkey": "<server's private key>",
+  "bind_address": "0.0.0.0:62789",
+  "virtual_ip": "10.20.0.1",
+  "subnet": 24,
+  "peers": [
+    { "name": "laptop", "pubkey": "<peer's public key>", "virtual_ip": "10.20.0.3", "subnet": 24 }
+  ]
+}
+```
 
 ---
 
 ## Repository layout
 
 ```
-main.go        # CLI entrypoint, flags, config loading
-client/        # peer-side loop: handshake, encrypt, decrypt, keepalive
-server/        # hub: accepts handshakes, decrypts, routes by inner dst IP
-crypto/        # ML-KEM-768 key import/export + HKDF-SHA256 derivation
-proto/         # wire-format encoders/decoders + message-type constants
-tunif/         # TUN device creation and `ip` configuration
-config/        # JSON config structs for peer and server
-models/        # Peer struct used by the server's routing table
+client/                # peer-side data-plane: handshake, encrypt, decrypt, keepalive
+server/                # hub: accepts handshakes, decrypts, routes by inner dst IP, peer mgmt
+  server.go            #   Init/Run + exported peer-management API
+  network.go           #   UDP/TUN read loops, handshake handler, forwarding
+  models.go            #   internal peer struct for the routing table
+  utils.go             #   allowed-peer loading, key validation
+crypto/                # ML-KEM-768 key import/export + HKDF-SHA256 derivation
+proto/                 # wire-format encoders/decoders + message-type constants
+tunif/                 # TUN device creation and `ip` route configuration
+config/                # JSON config structs (PeerConfig, ServerConfig)
+examples/sample_client # reference CLI that wires the packages together
 ```
 
 ---
@@ -66,22 +493,23 @@ models/        # Peer struct used by the server's routing table
 
 All messages are sent as UDP datagrams. The first byte is always the **message type**.
 
-| Code | Name            | Direction       | Length         |
-|------|-----------------|-----------------|----------------|
+| Code | Name            | Direction       | Length               |
+|------|-----------------|-----------------|----------------------|
 | 0x01 | `ClientHello`   | client → server | `2 + nameLen + 1088` |
-| 0x02 | `ServerHello`   | server → client | `1 + 1088`     |
-| 0x03 | `Data`          | both            | `1 + 12 + ct`  |
-| 0x04 | `KeepAlive`     | both            | `5`            |
-| 0x05 | `KeepAliveSYN`  | (flag byte)     | n/a            |
-| 0x06 | `KeepAliveACK`  | (flag byte)     | n/a            |
+| 0x02 | `ServerHello`   | server → client | `1 + 1088`           |
+| 0x03 | `Data`          | both            | `1 + 12 + ct`        |
+| 0x04 | `KeepAlive`     | both            | `5`                  |
+| 0x05 | `KeepAliveSYN`  | (flag byte)     | n/a                  |
+| 0x06 | `KeepAliveACK`  | (flag byte)     | n/a                  |
 
 Constants:
 
-- ML-KEM-768 ciphertext is fixed at **1088 bytes**.
-- ML-KEM-768 shared secret is **32 bytes**.
+- ML-KEM-768 ciphertext is fixed at **1088 bytes**; shared secret is **32 bytes**.
 - ChaCha20-Poly1305: **32-byte key**, **12-byte nonce**, **16-byte tag**.
-- HKDF salt: empty (nil). HKDF info string: the protocol version, currently
-  `"ownvpn0.0.4"` (literal ASCII, no trailing newline). Output length: 32 bytes.
+- HKDF salt: empty (nil). HKDF info string: `"c2s"` for the client→server key and `"s2c"`
+  for the server→client key (literal ASCII, no trailing newline). Output length: 32 bytes each.
+- The 12-byte data nonce is a **64-bit big-endian counter** in bytes 0..7, with bytes 8..11
+  set to zero. It starts at 1 each session and increments by one per packet, per direction.
 
 ### ClientHello (0x01)
 
@@ -106,14 +534,16 @@ Constants:
 ### Data (0x03)
 
 ```
-+------+----------------+-----------------------------------+
-| 0x03 | nonce (12 B)   | chacha20poly1305 ciphertext+tag   |
-+------+----------------+-----------------------------------+
-   1B        12 B                 inner_len + 16 B
++------+---------------------------+-----------------------------------+
+| 0x03 | nonce = ctr(8B BE) + 0000 | chacha20poly1305 ciphertext+tag   |
++------+---------------------------+-----------------------------------+
+   1B            12 B                          inner_len + 16 B
 ```
 
-The plaintext that goes in / comes out is a **raw IPv4 packet** as read from the TUN
-device. The AEAD is called with `additionalData = nil`.
+The nonce is a 64-bit big-endian counter (bytes 0..7) followed by four zero bytes. The
+plaintext is a **raw IPv4 packet** as read from the TUN device. The AEAD is called with
+`additionalData = nil`. See [Replay protection & nonces](#replay-protection--nonces) for how
+the counter is validated.
 
 ### KeepAlive (0x04)
 
@@ -125,108 +555,104 @@ device. The AEAD is called with `additionalData = nil`.
 ```
 
 `flag` is `0x05` (SYN) when sent by the client and `0x06` (ACK) when sent back by the
-server. The 3 random bytes are padding to make passive traffic-analysis a little
-harder; they are not validated.
+server. The 3 random bytes are padding; they are not validated.
 
 ---
 
-## Handshake (read this if you're porting the client)
+## Handshake
 
-Each side owns a static ML-KEM-768 keypair. The handshake is **two messages** and
-derives a fresh 32-byte ChaCha20-Poly1305 key every time.
+Each side owns a static ML-KEM-768 keypair. The handshake is **two messages** and derives a
+fresh 32-byte ChaCha20-Poly1305 key every time.
 
-Notation: `EK_x` = encapsulation (public) key of `x`, `DK_x` = decapsulation (private)
-key of `x`. `Encaps(EK) -> (ss, ct)` returns a 32-byte shared secret and a 1088-byte
+Notation: `EK_x` = encapsulation (public) key of `x`, `DK_x` = decapsulation (private) key
+of `x`. `Encaps(EK) -> (ss, ct)` returns a 32-byte shared secret and a 1088-byte
 ciphertext. `Decaps(DK, ct) -> ss` recovers the same 32-byte shared secret.
 
 ### Step 1 — client builds and sends `ClientHello`
 
 1. The client calls `Encaps(EK_server)` and gets `(ss1, ct1)`.
-2. It builds `ClientHello { name, publicData = ct1 }` and encodes it per the wire
-   format above (1 + 1 + nameLen + 1088 bytes).
+2. It builds `ClientHello { name, publicData = ct1 }` (`1 + 1 + nameLen + 1088` bytes).
 3. It sends the datagram to the server's UDP endpoint.
 
 ### Step 2 — server processes `ClientHello`
 
-1. Decodes the message; rejects if `name` is not in its `peers` config.
+1. Decodes the message; rejects if `name` is not registered, or if that peer is `Disabled`.
 2. Looks up that peer's static public key `EK_client`.
-3. Computes `ss1 = Decaps(DK_server, ct1)` — this is the same 32-byte secret the client
-   has. Failure here means the client used the wrong server public key.
+3. Computes `ss1 = Decaps(DK_server, ct1)`. Failure means the client used the wrong server
+   public key.
 4. Computes `Encaps(EK_client) -> (ss2, ct2)`.
-5. Derives `K = HKDF-SHA256(ikm = ss1 || ss2, salt = nil, info = "ownvpn0.0.4", L = 32)`.
-6. Stores the peer keyed by both its UDP source address (for the data path) and its
-   configured virtual IP (for the routing table). Any previous session for the same
-   virtual IP is evicted.
+5. Derives both directional keys from `ikm = ss1 || ss2` (salt `nil`, `L = 32`):
+   `Kc2s = HKDF-SHA256(ikm, "c2s")` and `Ks2c = HKDF-SHA256(ikm, "s2c")`.
+6. Stores the peer (with zeroed send/receive counters) keyed by both its UDP source address
+   (data path) and its virtual IP (routing table). Any previous session for the same virtual
+   IP is evicted.
 7. Sends `ServerHello { publicData = ct2 }`.
 
 ### Step 3 — client processes `ServerHello`
 
-1. Reads the response with a 1-second read deadline (so a lost packet doesn't wedge the
-   client; on timeout the whole handshake is retried). The deadline is cleared after a
-   successful read.
+1. Reads the response with a 2-second read deadline (a lost packet retries the whole
+   handshake). The deadline is cleared after a successful read.
 2. Verifies the source address matches the expected server endpoint.
-3. Decodes `ServerHello`, then computes `ss2 = Decaps(DK_client, ct2)`. Failure here
-   means the server used the wrong client public key.
-4. Derives the **same** `K = HKDF-SHA256(ss1 || ss2, nil, "ownvpn0.0.4", 32)`.
-5. Initializes ChaCha20-Poly1305 with `K`. Tunnel is now ready.
+3. Decodes `ServerHello`, computes `ss2 = Decaps(DK_client, ct2)`. Failure means the server
+   used the wrong client public key.
+4. Derives the **same** `Kc2s` and `Ks2c` from `ss1 || ss2` (info `"c2s"` / `"s2c"`).
+5. Zeroes its send/receive counters, then initializes ChaCha20-Poly1305 for each direction.
+   Tunnel is now ready.
 
 ### Authentication property
 
-Because `ss1` can only be recovered with `DK_server`, and `ss2` can only be recovered
-with `DK_client`, only the legitimate holders of both private keys can derive `K`. An
-attacker who has *one* of the two keys still cannot. There are no signatures and no
-certificates — authentication is a side-effect of mutual key encapsulation.
+Because `ss1` can only be recovered with `DK_server` and `ss2` only with `DK_client`, only
+the legitimate holders of both private keys can derive the session keys. An attacker holding
+*one* of the two keys still cannot. There are no signatures and no certificates —
+authentication is a side-effect of mutual key encapsulation.
 
 ### Re-handshake
 
 The client re-runs the handshake when **any** of these happen:
 
-- The 3-minute `HANDSHAKE_TIMEOUT` ticker fires.
+- The 5-minute `HANDSHAKE_TIMEOUT` ticker fires.
 - AEAD `Open` (decrypt) returns an error on a received data packet.
-- `conn.WriteTo` fails when sending an encrypted data packet.
+- `WriteTo` fails when sending an encrypted data packet.
+- A keepalive ACK reports the session is no longer valid.
 
-On a re-handshake the client clears its `aead` (so the reader/writer goroutines pause
-on `aead == nil` until the new key is installed) and sends a fresh `ClientHello`. The
-server treats a new `ClientHello` from any source as authoritative: if the same virtual
-IP was already mapped to a different UDP address, the old mapping is dropped.
+On a re-handshake the client clears its keys (the reader/writer goroutines pause until the
+new keys are installed), **resets both nonce counters to zero**, and sends a fresh
+`ClientHello`. The server treats a new `ClientHello` as authoritative: it builds a new
+session with fresh keys and zeroed counters, and if the same virtual IP was mapped to a
+different UDP address, the old mapping is dropped.
 
-### Pseudocode (target Java/Android)
+### Porting a client to another language
 
 ```text
 // one-time
-DK_client = load_private_key(peer.privkey)
-EK_server = load_public_key(peer.pubkey)
+DK_client  = load_private_key(peer.privkey)
+EK_server  = load_public_key(peer.pubkey)
 serverAddr = resolve(peer.endpoint)
-socket = DatagramSocket()                  // ephemeral local port
+socket     = DatagramSocket()                            // ephemeral local port
 
-// handshake loop (runs once at startup, then every 180 s
-// and on any cipher failure)
+// handshake loop (once at startup, then every 300 s and on any cipher failure)
 loop {
     (ss1, ct1) = MLKEM768.encaps(EK_server)
+    send(socket, serverAddr, [0x01] || [len(name)] || name_bytes || ct1)   // 2+N+1088 B
 
-    send(socket, serverAddr,
-         [0x01] || [len(name)] || name_bytes || ct1)        // 2+N+1088 B
-
-    socket.setSoTimeout(1000)                                // 1 s
+    socket.setSoTimeout(2000)                            // 2 s
     (resp, src) = recv(socket, 2048)
-    if src != serverAddr || resp[0] != 0x02
-       || resp.length != 1 + 1088 { retry }
+    if src != serverAddr || resp[0] != 0x02 || resp.length != 1 + 1088 { retry }
 
     ct2 = resp[1..1089]
     ss2 = MLKEM768.decaps(DK_client, ct2)
-
-    ikm = ss1 || ss2                                          // 64 B
-    K   = HKDF_SHA256(ikm, salt=null, info="ownvpn0.0.4", 32) // 32 B
-    aead = ChaCha20Poly1305(K)
-    handshake_done = true
-    wait(min(180 s, until cipher_failure))
+    ikm = ss1 || ss2                                     // 64 B
+    Kc2s = HKDF_SHA256(ikm, salt=null, info="c2s", 32)   // client -> server key
+    Ks2c = HKDF_SHA256(ikm, salt=null, info="s2c", 32)   // server -> client key
+    send_ctr = 0; recv_hwm = 0                           // reset before using the new keys
+    wait(min(300 s, until cipher_failure))
 }
 
 // data: TUN -> network
 on_tun_packet(p):
-    if !handshake_done: drop
-    nonce = secure_random(12)
-    ct    = aead.seal(nonce, plaintext=p, aad=null)           // tag is appended
+    send_ctr += 1
+    nonce = uint64_be(send_ctr) || 0x00000000            // 8-byte counter + 4 zero bytes
+    ct    = ChaCha20Poly1305(Kc2s).seal(nonce, plaintext=p, aad=null)
     send(socket, serverAddr, [0x03] || nonce || ct)
 
 // data: network -> TUN
@@ -234,30 +660,27 @@ on_udp_packet(buf, src):
     if src != serverAddr: drop
     if buf[0] == 0x04: handle_keepalive(buf); return
     if buf[0] != 0x03 || buf.length < 1+12+16: drop
-    nonce = buf[1..13]
-    ct    = buf[13..]
-    try:
-        pt = aead.open(nonce, ct, aad=null)
-    catch:
-        handshake_done = false                                // trigger rehandshake
-        return
+    nonce   = buf[1..13]
+    counter = uint64_be(nonce[0..8])
+    if counter <= recv_hwm: drop                         // replay / out-of-order
+    pt = ChaCha20Poly1305(Ks2c).open(nonce, buf[13..], aad=null)  // on failure -> rehandshake
+    recv_hwm = counter                                   // only after the tag verifies
     tun.write(pt)
 
-// keepalive (every 25 s while handshake_done)
-send(socket, serverAddr, [0x04, 0x05, rnd, rnd, rnd])         // SYN
-// expect [0x04, 0x06, rnd, rnd, rnd] (ACK) back
+// keepalive (every 25 s while a session exists)
+send(socket, serverAddr, [0x04, 0x05, rnd, rnd, rnd])    // SYN, expect [0x04,0x06,...] ACK
 ```
 
-A few platform notes for Android:
+Platform notes (e.g. Android):
 
-- The `info` string passed to HKDF must match exactly what the server uses — it is the
-  `OWNVPN_VERSION` constant in `main.go`. Keep it in sync when the server is upgraded.
-- Use `java.security.SecureRandom` for the per-packet nonce. Do **not** use a counter
-  — the server expects 12 random bytes and there is no replay window.
-- ML-KEM-768 is in `java.security.KeyPairGenerator` as of JDK 24 (`"ML-KEM"`); on
-  Android you'll likely need BouncyCastle (`bcprov` ≥ 1.78 exposes `MLKEM`).
-- The TUN device on Android is provided by `VpnService` — the `ParcelFileDescriptor`
-  it returns plays the role of the `iface` file in this codebase.
+- The HKDF `info` strings (`"c2s"`, `"s2c"`) and the counter-nonce layout must match the
+  server exactly, and you must run the same ownvpn protocol version on both ends.
+- The nonce is a per-direction monotonic counter, **not** random — reset it to zero on every
+  re-handshake, and never let it repeat under the same key.
+- ML-KEM-768 is in `java.security.KeyPairGenerator` as of JDK 24 (`"ML-KEM"`); on Android
+  use BouncyCastle (`bcprov` ≥ 1.78 exposes `MLKEM`).
+- On Android the TUN device comes from `VpnService`; its `ParcelFileDescriptor` plays the
+  role of the `iface` in this codebase.
 
 ---
 
@@ -274,77 +697,53 @@ A few platform notes for Android:
                                                                to another peer
 ```
 
-The server looks at bytes 16..19 of every decrypted inner packet (the IPv4 destination
-address). If it equals the server's own virtual IP it is written to the local TUN; if
-it matches a known peer's virtual IP it is re-sealed under that peer's session key and
-sent to that peer's UDP address. If it matches **neither**, the packet is written to the
-server's TUN device (see **Full tunnel** below) instead of being dropped. Non-IPv4
-packets (`version != 4`) are dropped.
+The server looks at bytes 16..19 of every decrypted inner packet (the IPv4 destination). If
+it equals the server's own virtual IP the packet is written to the local TUN; if it matches
+a known peer's virtual IP it is re-sealed under that peer's session key and sent to that
+peer. If it matches **neither**, the packet is written to the server's TUN device (see
+[Full tunnel](#full-tunnel)) rather than dropped. Non-IPv4 packets (`version != 4`) are
+dropped.
 
 ---
 
 ## Full tunnel
 
-By default ownvpn is a point-to-point / hub overlay: only traffic addressed to a
-`virtual_ip` on the tunnel subnet actually crosses the tunnel; everything else uses the
-host's normal routes. **Full tunnel** mode turns the server into a default gateway so
-that *all* of a client's traffic is encrypted and egresses through the server — the same
-thing a commercial "VPN" gives you (hidden origin IP, encrypted transit on the local
-network, etc.).
+By default ownvpn is a hub overlay: only traffic addressed to a `virtual_ip` on the tunnel
+subnet crosses the tunnel; everything else uses the host's normal routes. **Full tunnel**
+mode turns the server into a default gateway so that *all* of a client's traffic is
+encrypted and egresses through the server.
 
-Enable it by adding `"fulltunnel": true` to the peer (client) config — there is no
-command-line flag. Then start the client the normal way:
-
-```json
-{
-  "name": "archlinux",
-  "privkey": "<this peer's private key>",
-  "pubkey":  "<server's public key>",
-  "virtual_ip": "10.20.0.3",
-  "subnet": 24,
-  "endpoint": "203.0.113.10:62789",
-  "fulltunnel": true
-}
-```
-
-```sh
-sudo ./ownvpn -config peer.json
-```
+Enable it by setting `FullTunnel: true` on the client's `PeerConfig` (or `"fulltunnel":
+true` in JSON). There is no separate flag or API call — the client acts on the config field
+when `client.Run` starts.
 
 ### How the client side works
 
-When `fulltunnel` is `true`, immediately after the TUN device is created the client
-reprograms the host routing table (all via the `ip` command in the `tunif` package):
+When `FullTunnel` is true, right after the TUN device is created the client reprograms the
+host routing table (via the `ip` command in `tunif`):
 
-1. **Capture all traffic.** It adds two routes, `0.0.0.0/1` and `128.0.0.0/1`, pointing
-   at the ownvpn TUN device (`bvpn0`). Together these two `/1` routes cover the whole IPv4
-   address space, and because they are *more specific* than the existing `0.0.0.0/0`
-   default route they win for every destination — without deleting the original default
-   route, so it can be restored cleanly later.
-2. **Keep the tunnel itself reachable.** If we routed *everything* into the tunnel, the
-   encrypted UDP packets going to the server would themselves be routed back into the
-   tunnel — a loop. To avoid this the client discovers the machine's current physical
-   default gateway (via the `jackpal/gateway` library) and pins a host route to the VPN
-   **server's endpoint IP** through that real gateway, so the outer VPN packets keep
-   using the physical link.
-3. **Clean up on exit.** On Ctrl-C / `SIGTERM` the client's `defer` calls
-   `ClearFullTunnel`, which deletes the pinned host route to the endpoint. The two `/1`
-   routes are bound to the `bvpn0` device, so the kernel drops them automatically when the
-   TUN interface is closed — they do not need to be removed explicitly. If the process is
-   killed hard (`SIGKILL`, power loss) the device teardown still clears the `/1` routes,
-   but the endpoint host route may linger and can be removed manually with
-   `ip route del <endpoint-ip> via <gateway-ip>`.
+1. **Capture all traffic.** It adds `0.0.0.0/1` and `128.0.0.0/1` pointing at `bvpn0`.
+   Together these two `/1` routes cover the whole IPv4 space and, being more specific than
+   the existing `0.0.0.0/0` default, win for every destination — without deleting the
+   original default route, so it restores cleanly.
+2. **Keep the tunnel reachable.** To stop the encrypted UDP packets to the server from
+   being routed back into the tunnel (a loop), the client discovers the physical default
+   gateway (via `jackpal/gateway`) and pins a host route to the **server's endpoint IP**
+   through that real gateway.
+3. **Clean up on exit.** On cancellation the client's `defer` calls `ClearFullTunnel`,
+   deleting the pinned host route. The two `/1` routes are bound to `bvpn0` and vanish when
+   the TUN closes. If the process is killed hard, the endpoint host route may linger and can
+   be removed with `ip route del <endpoint-ip> via <gateway-ip>`.
 
-The endpoint IP used for the host route is taken from the `endpoint` in the peer config,
-with the `:port` stripped (`strings.Split(cfg.Endpoint, ":")[0]`). This assumes a literal
-IPv4 endpoint — a DNS hostname is not resolved here.
+The endpoint IP is taken from `Endpoint` with the `:port` stripped — this assumes a literal
+IPv4 endpoint; a DNS hostname is not resolved here.
 
 ### How the server side works
 
-Nothing needs to be enabled on the server *in ownvpn itself*: when the server decrypts a
-packet whose destination is neither its own virtual IP nor a known peer, it writes the
-packet to its TUN device and lets the host kernel route it. For that to reach the
-internet and come back, the **server's host** must be configured as a router:
+Nothing needs enabling in ownvpn itself: when the server decrypts a packet whose
+destination is neither its own virtual IP nor a known peer, it writes it to its TUN device
+and lets the host kernel route it. For that to reach the internet, the **server's host**
+must be configured as a router:
 
 ```sh
 # 1. Allow the kernel to forward packets between interfaces
@@ -355,134 +754,69 @@ sudo sysctl -w net.ipv4.ip_forward=1
 sudo iptables -t nat -A POSTROUTING -s 10.20.0.0/24 -o eth0 -j MASQUERADE
 ```
 
-With those in place the round-trip is:
-
-```
-client TUN ──► [encrypt] ──► server ──► [decrypt] ──► server TUN ──► kernel
-                                                                       │ SNAT (masquerade)
-                                                                       ▼
-                                                                    internet
-                                                                       │  reply, DNAT back
-                                                                       ▼
-kernel ──► server TUN ──► [lookup client virtual IP] ──► [encrypt] ──► client
-```
-
-The masquerade rule rewrites the client's `virtual_ip` source to the server's public
-address on the way out; the reply is un-NAT'd back to the client's virtual IP, read off
-the server's TUN, matched against `peersByIP`, re-encrypted and sent back to the client.
-
 ### Notes and limitations
 
-- Only **IPv4** is tunnelled. IPv6 is not routed into the tunnel, so if the host has
-  working IPv6 it can leak outside the tunnel — disable IPv6 on the client if that
-  matters for your threat model.
-- DNS is not modified. Your resolver requests travel through the tunnel like any other
-  traffic, but the servers you query are unchanged; set DNS separately if you want to
-  avoid your ISP's resolver.
-- Full tunnel is a **client-only config option**; the server serves normal peers and
-  full-tunnel peers at the same time with no extra configuration beyond the host NAT above.
+- Only **IPv4** is tunnelled; working host IPv6 can leak outside the tunnel.
+- DNS is not modified — set a resolver separately if you want to avoid your ISP's.
+- Full tunnel is a **client-only** setting; a server serves normal and full-tunnel peers
+  simultaneously with no extra config beyond the host NAT above.
 
 ---
 
-## Requirements
+## Requirements & build
 
-- Go 1.26+ (uses the stdlib `crypto/mlkem` and `crypto/hkdf` packages).
-- Linux. The `tunif` package shells out to `ip` to configure the TUN device.
-- Root (or `CAP_NET_ADMIN`) — needed to create the TUN device and run `ip link`.
+- **Go 1.26+** (stdlib `crypto/mlkem`, `crypto/hkdf`).
+- **Linux.** `tunif` shells out to `ip` to configure the TUN device.
+- **Root** (or `CAP_NET_ADMIN`) — to create the TUN device and run `ip link`.
 
-## Build
+Build the reference CLI:
 
 ```sh
-go build -o ownvpn .
+go build -o ownvpn ./examples/sample_client
 ```
 
 Cross-compile for ARMv7 (e.g. a router):
 
 ```sh
-GOOS=linux GOARCH=arm GOARM=7 go build -o ownvpn_armv7 .
+GOOS=linux GOARCH=arm GOARM=7 go build -o ownvpn_armv7 ./examples/sample_client
 ```
 
-## Key generation
+---
 
-Generate a private key, then derive its public key:
+## Security notes & limitations
 
-```sh
-./ownvpn -genkey
-./ownvpn -pubkey <private-key>
-```
+- **Post-quantum only, no hybrid.** Authentication and confidentiality rest entirely on
+  ML-KEM-768. There is no classical (X25519/RSA) layer, so there is no fallback if a flaw
+  is found in ML-KEM. This is a deliberate design choice, not an oversight.
+- **No forward secrecy.** Both shared secrets come from encapsulating to *static* keys, so
+  the per-handshake randomness lives inside the recorded ciphertexts. An attacker who records
+  traffic and later obtains **both** the server's and a peer's private keys can recover that
+  peer's past session keys. WireGuard-style ephemeral key exchange would fix this; ownvpn
+  does not have it.
+- **Replay protection is a single high-water mark, not a sliding window.** Replays are
+  rejected (see [Replay protection & nonces](#replay-protection--nonces)), but genuinely
+  out-of-order packets are dropped rather than accepted within a window.
+- **No inner-source-IP filtering.** The server routes on the decrypted packet's *destination*
+  and does not verify that its *source* matches the sending peer's assigned virtual IP, so an
+  authenticated peer can spoof another peer's virtual IP. There is no WireGuard-style
+  cryptokey-routing check.
+- **Handshake commits state before key confirmation.** A well-formed `ClientHello` for a
+  known peer name replaces that peer's session mapping before the initiator proves it can
+  derive the keys, so an attacker who knows a valid peer *name* can knock a peer off the
+  routing table until its next re-handshake (a DoS, not a compromise).
+- **Metadata.** Packet sizes and timing are not padded (beyond the 3 keepalive bytes), and
+  fixed message types / 1088-byte handshakes are trivially fingerprintable by DPI.
+- **Keys are plaintext** in the config structs/JSON — protect them at rest (file perms,
+  secrets manager) yourself; ownvpn does not encrypt them.
+- **Single server instance per process** (package-level state) — run multiple hubs in
+  separate processes.
 
-Both are printed as base64. Every peer and the server need their own keypair. The
-private key is the full ML-KEM-768 decapsulation key (seed-expanded form).
+Treat ownvpn as a compact, auditable, from-scratch VPN for experimentation, self-hosting,
+and post-quantum research — not (yet) as a hardened replacement for WireGuard in a
+high-assurance production deployment.
 
-## Configuration
+---
 
-Configuration is a JSON file passed with `-config`.
+## License
 
-**Peer (client):**
-
-```json
-{
-  "name": "archlinux",
-  "privkey": "<this peer's private key>",
-  "pubkey":  "<server's public key>",
-  "virtual_ip": "10.20.0.3",
-  "subnet": 24,
-  "endpoint": "203.0.113.10:62789",
-  "fulltunnel": false
-}
-```
-
-`fulltunnel` is optional (defaults to `false`). Set it to `true` to route the whole
-machine's traffic through the server — see the **Full tunnel** section.
-
-**Server:**
-
-```json
-{
-  "privkey": "<server's private key>",
-  "bind_address": "0.0.0.0:62789",
-  "virtual_ip": "10.20.0.1",
-  "subnet": 24,
-  "peers": [
-    {
-      "name": "archlinux",
-      "pubkey": "<peer's public key>",
-      "virtual_ip": "10.20.0.3",
-      "subnet": 24
-    }
-  ]
-}
-```
-
-The server only accepts peers listed in `peers`, matched by `name`. Keep private keys
-out of version control.
-
-## Usage
-
-Start the server:
-
-```sh
-sudo ./ownvpn -server -config server.json
-```
-
-Start a client:
-
-```sh
-sudo ./ownvpn -config peer.json
-```
-
-Once connected, peers can reach each other over the `virtual_ip` addresses on the
-configured subnet.
-
-To push **all** of the client's traffic through the server (and hide the client's origin
-IP), set `"fulltunnel": true` in the peer config and make sure the server host is set up
-for NAT — see the **Full tunnel** section. There is no command-line flag for it.
-
-### Flags
-
-| Flag           | Applies to | Description                                                        |
-|----------------|------------|--------------------------------------------------------------------|
-| `-server`      | both       | Run in server (hub) mode instead of client mode.                   |
-| `-config FILE` | both       | Path to the JSON config (required to run the tunnel).              |
-| `-genkey`      | —          | Generate and print a new ML-KEM-768 private key, then exit.        |
-| `-pubkey KEY`  | —          | Print the public key for the given private key, then exit.         |
+MIT — see [LICENSE](LICENSE).

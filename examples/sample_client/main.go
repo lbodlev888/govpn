@@ -15,10 +15,8 @@ import (
 	"github.com/lbodlev888/ownvpn/server"
 )
 
-const OWNVPN_VERSION = "ownvpn0.0.4"
-
 func main() {
-	serverMode := flag.Bool("server", false, "Run in server mode") //in future move to bare or web mode
+	serverMode := flag.Bool("server", false, "Run in server mode")
 	generateKey := flag.Bool("genkey", false, "Generate cryptographic keys")
 	pubKey := flag.String("pubkey", "", "Get public key from private key")
 	configFile := flag.String("config", "/etc/ownvpn/config.json", "Provide the path to configuration file")
@@ -51,7 +49,7 @@ func main() {
 	}
 
 	//move version key to org
-	ctx, _ := signal.NotifyContext(context.WithValue(context.Background(), "version", OWNVPN_VERSION), os.Interrupt)
+	ctx, _ := signal.NotifyContext(context.Background(), os.Interrupt)
 
 	rawConfig, err := os.ReadFile(*configFile)
 	if err != nil {
