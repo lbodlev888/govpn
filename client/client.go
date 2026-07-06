@@ -19,8 +19,8 @@ import (
 )
 
 const (
-	BUFFERSIZE = 2048
-	HANDSHAKE_TIMEOUT = 5 * time.Minute
+	buffersize = 2048
+	handshake_timeout = 5 * time.Minute
 )
 
 func Run(ctx context.Context, cfg config.PeerConfig) {
@@ -113,7 +113,7 @@ func Run(ctx context.Context, cfg config.PeerConfig) {
 				continue
 			}
 		
-			respBuf := make([]byte, BUFFERSIZE)
+			respBuf := make([]byte, buffersize)
 			conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 			n, src, err := conn.ReadFrom(respBuf)
 			if err != nil {
@@ -162,7 +162,7 @@ func Run(ctx context.Context, cfg config.PeerConfig) {
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(HANDSHAKE_TIMEOUT): //re-establish encrypted connection
+			case <-time.After(handshake_timeout): //re-establish encrypted connection
 			case <-cipherChan:
 			}
 		}
@@ -197,8 +197,8 @@ func Run(ctx context.Context, cfg config.PeerConfig) {
 		}
 	})
 
-	wg.Go(func() {
-		buf := make([]byte, BUFFERSIZE)
+	wg.Go(func() { //udpReadLoop
+		buf := make([]byte, buffersize)
 		for {
 			if ctx.Err() != nil {
 				break
@@ -271,7 +271,7 @@ func Run(ctx context.Context, cfg config.PeerConfig) {
 		}
 	})
 
-	packet := make([]byte, BUFFERSIZE)
+	packet := make([]byte, buffersize) //tunReadLoop
 	for {
 		if ctx.Err() != nil {
 			break
