@@ -27,7 +27,7 @@ const (
 
 var (
 	iface *water.Interface
-	s2cKeyA, c2sKeyA atomic.Pointer[[chacha20poly1305.KeySize]byte]
+	s2cKey, c2sKey atomic.Pointer[[chacha20poly1305.KeySize]byte]
 	lastNonceIn, lastNonceOut atomic.Uint64
 	cipherChan chan struct{}
 	serverAddr *net.UDPAddr
@@ -113,7 +113,7 @@ func keepaliveLoop(ctx context.Context) {
 		}
 
 		//even if here we do not encrypt we dont need to send keepalives if session isnt initialized
-		if c2sKeyA.Load() == nil || s2cKeyA.Load() == nil {
+		if c2sKey.Load() == nil || s2cKey.Load() == nil {
 			continue
 		}
 
@@ -130,7 +130,7 @@ func udpReadLoop(ctx context.Context) {
 	for {
 		if ctx.Err() != nil {
 			break
-		} else if s2cKeyA.Load() == nil {
+		} else if s2cKey.Load() == nil {
 			<-time.After(100 * time.Millisecond)
 			continue
 		}
@@ -141,7 +141,7 @@ func udpReadLoop(ctx context.Context) {
 			continue
 		}
 
-		if s2cKeyA.Load() == nil || n < 1 || src.String() != serverAddr.String() {
+		if s2cKey.Load() == nil || n < 1 || src.String() != serverAddr.String() {
 			continue
 		}
 
@@ -149,8 +149,8 @@ func udpReadLoop(ctx context.Context) {
 			keepaliveStatus := proto.DecodeKeepAlive(buf[:n], proto.MsgKeepAliveACK)
 			log.Printf("Received keepalive. Status: %t\n", keepaliveStatus)
 			if !keepaliveStatus {
-				c2sKeyA.Store(nil)
-				s2cKeyA.Store(nil)
+				c2sKey.Store(nil)
+				s2cKey.Store(nil)
 				cipherChan <- struct{}{}
 			}
 			continue
@@ -174,7 +174,7 @@ func udpReadLoop(ctx context.Context) {
 			continue
 		}
 
-		k := s2cKeyA.Load()
+		k := s2cKey.Load()
 		if k == nil {
 			continue
 		}
@@ -188,8 +188,8 @@ func udpReadLoop(ctx context.Context) {
 		frame, err := aead.Open(nil, nonce, ciphertext, nil)
 		if err != nil {
 			log.Println("Invalid encrypted frame: " + err.Error())
-			s2cKeyA.Store(nil)
-			c2sKeyA.Store(nil)
+			s2cKey.Store(nil)
+			c2sKey.Store(nil)
 			cipherChan <- struct{}{}
 			continue
 		}
@@ -204,7 +204,7 @@ func tunReadLoop(ctx context.Context) {
 	for {
 		if ctx.Err() != nil {
 			return
-		} else if c2sKeyA.Load() == nil {
+		} else if c2sKey.Load() == nil {
 			<-time.After(100 * time.Millisecond)
 			continue
 		}
@@ -215,7 +215,7 @@ func tunReadLoop(ctx context.Context) {
 			continue
 		}
 
-		if c2sKeyA.Load() == nil {
+		if c2sKey.Load() == nil {
 			continue
 		}
 
@@ -227,7 +227,7 @@ func tunReadLoop(ctx context.Context) {
 		out = append(out, proto.MsgData)
 		out = append(out, nonce...)
 
-		k := c2sKeyA.Load()
+		k := c2sKey.Load()
 		if k == nil {
 			continue
 		}
@@ -242,8 +242,8 @@ func tunReadLoop(ctx context.Context) {
 
 		if _, err := conn.WriteTo(out, serverAddr); err != nil {
 			log.Println("Failed to write packet: " + err.Error())
-			s2cKeyA.Store(nil)
-			c2sKeyA.Store(nil)
+			s2cKey.Store(nil)
+			c2sKey.Store(nil)
 			cipherChan <- struct{}{}
 			continue
 		}
@@ -257,8 +257,8 @@ func rehandshakeLoop(ctx context.Context) {
 			return
 		}
 
-		s2cKeyA.Store(nil)
-		c2sKeyA.Store(nil)
+		s2cKey.Store(nil)
+		c2sKey.Store(nil)
 		lastNonceIn.Store(0) 
 		lastNonceOut.Store(0)
 
@@ -307,23 +307,23 @@ func rehandshakeLoop(ctx context.Context) {
 	
 		final_key := append(sharedKey1, sharedKey2...)
 	
-		c2sKey, err := crypto.DeriveEncryptionKey(final_key, nil, "c2s", chacha20poly1305.KeySize)
+		c2s, err := crypto.DeriveEncryptionKey(final_key, nil, "c2s", chacha20poly1305.KeySize)
 		if err != nil {
 			log.Println("Could not derive encryption key: " + err.Error())
 			continue
 		}
 		var k1 [chacha20poly1305.KeySize]byte
-		copy(k1[:], c2sKey)
-		c2sKeyA.Store(&k1)
+		copy(k1[:], c2s)
+		c2sKey.Store(&k1)
 
-		s2cKey, err := crypto.DeriveEncryptionKey(final_key, nil, "s2c", chacha20poly1305.KeySize)
+		s2c, err := crypto.DeriveEncryptionKey(final_key, nil, "s2c", chacha20poly1305.KeySize)
 		if err != nil {
 			log.Println("Could not derive encryption key: " + err.Error())
 			continue
 		}
 		var k2 [chacha20poly1305.KeySize]byte
-		copy(k2[:], s2cKey)
-		s2cKeyA.Store(&k2)
+		copy(k2[:], s2c)
+		s2cKey.Store(&k2)
 	
 		log.Println("Latest handshake " + time.Now().Format(time.RFC1123))
 		
