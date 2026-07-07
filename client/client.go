@@ -94,8 +94,10 @@ func Run(ctx context.Context) {
 	wg.Go(func() {
 		<-ctx.Done()
 		log.Println("Received stop signal. Closing everything")
-		if err := tunif.ClearFullTunnel(strings.Split(cfg.Endpoint, ":")[0]); err != nil {
-			log.Println("Failed to clear full tunnel: " + err.Error())
+		if cfg.FullTunnel {
+			if err := tunif.ClearFullTunnel(strings.Split(cfg.Endpoint, ":")[0]); err != nil {
+				log.Println("Failed to clear full tunnel: " + err.Error())
+			}
 		}
 		conn.Close()
 		iface.Close()
@@ -128,15 +130,16 @@ func keepaliveLoop(ctx context.Context) {
 func udpReadLoop(ctx context.Context) {
 	buf := make([]byte, buffersize)
 	for {
-		if ctx.Err() != nil {
-			break
-		} else if s2cKey.Load() == nil {
+		if s2cKey.Load() == nil {
 			<-time.After(100 * time.Millisecond)
 			continue
 		}
 
 		n, src, err := conn.ReadFrom(buf)
 		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
 			log.Println("Failed to read from server: " + err.Error())
 			continue
 		}
@@ -202,15 +205,16 @@ func udpReadLoop(ctx context.Context) {
 func tunReadLoop(ctx context.Context) {
 	packet := make([]byte, buffersize)
 	for {
-		if ctx.Err() != nil {
-			return
-		} else if c2sKey.Load() == nil {
+		if c2sKey.Load() == nil {
 			<-time.After(100 * time.Millisecond)
 			continue
 		}
 
 		plen, err := iface.Read(packet)
 		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
 			log.Println("Failed to read from iface: " + err.Error())
 			continue
 		}
@@ -253,7 +257,6 @@ func tunReadLoop(ctx context.Context) {
 func rehandshakeLoop(ctx context.Context) {
 	for {
 		if ctx.Err() != nil {
-			log.Println("Handshake process stopped")
 			return
 		}
 
