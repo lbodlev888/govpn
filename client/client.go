@@ -21,20 +21,20 @@ import (
 )
 
 const (
-	buffersize = 2048
+	buffersize        = 2048
 	handshake_timeout = 5 * time.Minute
 )
 
 var (
-	iface *water.Interface
-	s2cKey, c2sKey atomic.Pointer[[chacha20poly1305.KeySize]byte]
+	iface                     *water.Interface
+	s2cKey, c2sKey            atomic.Pointer[[chacha20poly1305.KeySize]byte]
 	lastNonceIn, lastNonceOut atomic.Uint64
-	cipherChan chan struct{}
-	serverAddr *net.UDPAddr
-	conn *net.UDPConn
-	cfg *config.PeerConfig
-	decaps *mlkem.DecapsulationKey768
-	encaps *mlkem.EncapsulationKey768
+	cipherChan                chan struct{}
+	serverAddr                *net.UDPAddr
+	conn                      *net.UDPConn
+	cfg                       *config.PeerConfig
+	decaps                    *mlkem.DecapsulationKey768
+	encaps                    *mlkem.EncapsulationKey768
 )
 
 func Init(config config.PeerConfig) error {
@@ -227,7 +227,7 @@ func tunReadLoop(ctx context.Context) {
 		n := lastNonceOut.Add(1)
 		binary.BigEndian.PutUint64(nonce, n)
 
-		out := make([]byte, 0, 1 + len(nonce) + plen + chacha20poly1305.Overhead)
+		out := make([]byte, 0, 1+len(nonce)+plen+chacha20poly1305.Overhead)
 		out = append(out, proto.MsgData)
 		out = append(out, nonce...)
 
@@ -262,7 +262,7 @@ func rehandshakeLoop(ctx context.Context) {
 
 		s2cKey.Store(nil)
 		c2sKey.Store(nil)
-		lastNonceIn.Store(0) 
+		lastNonceIn.Store(0)
 		lastNonceOut.Store(0)
 
 		log.Println("Re-handshaking...")
@@ -277,13 +277,13 @@ func rehandshakeLoop(ctx context.Context) {
 			log.Println("Failed to encode ClientHello: " + err.Error())
 			continue
 		}
-	
+
 		if _, err := conn.WriteTo(clientHelloBytes, serverAddr); err != nil {
 			log.Println("Failed to send ClientHello: " + err.Error())
 			<-time.After(5 * time.Second)
 			continue
 		}
-	
+
 		respBuf := make([]byte, buffersize)
 		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 		n, src, err := conn.ReadFrom(respBuf)
@@ -295,21 +295,21 @@ func rehandshakeLoop(ctx context.Context) {
 		if src.String() != serverAddr.String() {
 			continue
 		}
-	
+
 		serverHello, err := proto.DecodeServerHello(respBuf[:n])
 		if err != nil {
 			log.Println("Invalid ServerHello: " + err.Error())
 			continue
 		}
-	
+
 		sharedKey2, err := decaps.Decapsulate(serverHello.PublicData)
 		if err != nil {
 			log.Println("Could not decapsulate ServerHello: " + err.Error())
 			continue
 		}
-	
+
 		final_key := append(sharedKey1, sharedKey2...)
-	
+
 		c2s, err := crypto.DeriveEncryptionKey(final_key, nil, "c2s", chacha20poly1305.KeySize)
 		if err != nil {
 			log.Println("Could not derive encryption key: " + err.Error())
@@ -327,9 +327,9 @@ func rehandshakeLoop(ctx context.Context) {
 		var k2 [chacha20poly1305.KeySize]byte
 		copy(k2[:], s2c)
 		s2cKey.Store(&k2)
-	
+
 		log.Println("Latest handshake " + time.Now().Format(time.RFC1123))
-		
+
 		select {
 		case <-ctx.Done():
 			return

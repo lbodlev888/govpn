@@ -6,10 +6,10 @@ import (
 )
 
 const (
-	MsgClientHello  byte = 0x01
-	MsgServerHello  byte = 0x02
-	MsgData         byte = 0x03
-	MsgKeepAlive    byte = 0x04
+	MsgClientHello byte = 0x01
+	MsgServerHello byte = 0x02
+	MsgData        byte = 0x03
+	MsgKeepAlive   byte = 0x04
 
 	MsgKeepAliveSYN byte = 0x05
 	MsgKeepAliveACK byte = 0x06

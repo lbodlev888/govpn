@@ -64,7 +64,7 @@ func handleHandshake(pkt []byte, src *net.UDPAddr) {
 		log.Printf("Unknown peer %q from %s. Dropping\n", clientHello.Name, src)
 		return
 	}
-	
+
 	if peerCfg.Disabled {
 		log.Printf("Peer %s is disabled. Rejecting handshake", peerCfg.Name)
 		return
@@ -110,10 +110,10 @@ func handleHandshake(pkt []byte, src *net.UDPAddr) {
 	}
 
 	peer := &peer{
-		Addr:       src,
-		VirtualIP:  net.ParseIP(peerCfg.VirtualIP),
-		s2cKey: s2cKey,
-		c2sKey: c2sKey,
+		Addr:      src,
+		VirtualIP: net.ParseIP(peerCfg.VirtualIP),
+		s2cKey:    s2cKey,
+		c2sKey:    c2sKey,
 	}
 
 	peersMu.Lock()
@@ -163,7 +163,7 @@ func handleData(payload []byte, src *net.UDPAddr) {
 	}
 	peer.lastNonceIn = currentNonceIn
 
-	if len(frame) < 20 || frame[0] >> 4 != 4 {
+	if len(frame) < 20 || frame[0]>>4 != 4 {
 		return
 	}
 
@@ -193,7 +193,7 @@ func readFromIface(ctx context.Context) {
 		}
 		actualData := packet[:n]
 
-		if len(actualData) < 20 || actualData[0] >> 4 != 4 {
+		if len(actualData) < 20 || actualData[0]>>4 != 4 {
 			continue
 		}
 

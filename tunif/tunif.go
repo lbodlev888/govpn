@@ -20,26 +20,38 @@ func SetupInterface(localAddr string) (*water.Interface, error) {
 	}
 
 	err = runIP("link", "set", "dev", iface.Name(), "mtu", MTU)
-	if err != nil { return nil, fmt.Errorf("Failed to set MTU: %w", err) }
+	if err != nil {
+		return nil, fmt.Errorf("Failed to set MTU: %w", err)
+	}
 
 	err = runIP("addr", "add", localAddr, "dev", iface.Name())
-	if err != nil { return nil, fmt.Errorf("Failed to local IP address: %w", err) }
+	if err != nil {
+		return nil, fmt.Errorf("Failed to local IP address: %w", err)
+	}
 
 	err = runIP("link", "set", "dev", iface.Name(), "up")
-	if err != nil { return nil, fmt.Errorf("Failed to start: %w", err) }
+	if err != nil {
+		return nil, fmt.Errorf("Failed to start: %w", err)
+	}
 
 	return iface, nil
 }
 
 func SetupFullTunnel(endpoint, ifaceName string) error {
 	err := runIP("route", "add", "0.0.0.0/1", "dev", ifaceName)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 
 	err = runIP("route", "add", "128.0.0.0/1", "dev", ifaceName)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 
 	ip, err := gateway.DiscoverGateway()
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	gatewayAddr = ip.String()
 
 	err = runIP("route", "add", endpoint, "via", gatewayAddr)
@@ -55,6 +67,6 @@ func runIP(args ...string) error {
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
-	
+
 	return cmd.Run()
 }

@@ -20,16 +20,16 @@ const (
 )
 
 var (
-	peersMu      sync.RWMutex
-	peersByIP    = make(map[string]*peer) //key is virtual IP
-	peersByAddr  = make(map[string]*peer) //key is public IP
+	peersMu        sync.RWMutex
+	peersByIP      = make(map[string]*peer) //key is virtual IP
+	peersByAddr    = make(map[string]*peer) //key is public IP
 	allowedPeersMu sync.RWMutex
-	allowedPeers = make(map[string]config.PeerConfig) //key is name of peer
-	wg           sync.WaitGroup
-	decapsKey    *mlkem.DecapsulationKey768
-	iface        *water.Interface
-	udpConn      *net.UDPConn
-	cfg config.ServerConfig
+	allowedPeers   = make(map[string]config.PeerConfig) //key is name of peer
+	wg             sync.WaitGroup
+	decapsKey      *mlkem.DecapsulationKey768
+	iface          *water.Interface
+	udpConn        *net.UDPConn
+	cfg            config.ServerConfig
 )
 
 func Init(serverConfiguration config.ServerConfig) error {
