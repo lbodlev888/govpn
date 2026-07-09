@@ -14,5 +14,5 @@ type peer struct {
 	c2sKey       []byte
 	s2cKey       []byte
 	lastNonceOut atomic.Uint64
-	filter proto.Filter
+	filter       proto.Filter
 }

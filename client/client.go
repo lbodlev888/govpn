@@ -26,16 +26,16 @@ const (
 )
 
 var (
-	iface                     *water.Interface
-	s2cKey, c2sKey            atomic.Pointer[[chacha20poly1305.KeySize]byte]
-	lastNonceOut              atomic.Uint64
-	cipherChan                chan struct{}
-	serverAddr                *net.UDPAddr
-	conn                      *net.UDPConn
-	cfg                       *config.PeerConfig
-	decaps                    *mlkem.DecapsulationKey768
-	encaps                    *mlkem.EncapsulationKey768
-	filter proto.Filter
+	iface          *water.Interface
+	s2cKey, c2sKey atomic.Pointer[[chacha20poly1305.KeySize]byte]
+	lastNonceOut   atomic.Uint64
+	cipherChan     chan struct{}
+	serverAddr     *net.UDPAddr
+	conn           *net.UDPConn
+	cfg            *config.PeerConfig
+	decaps         *mlkem.DecapsulationKey768
+	encaps         *mlkem.EncapsulationKey768
+	filter         proto.Filter
 )
 
 func Init(config config.PeerConfig) error {
