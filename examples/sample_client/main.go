@@ -65,7 +65,7 @@ func main() {
 		}
 
 		if err := server.Init(cfg); err != nil {
-			log.Println("failed to init: " + err.Error())
+			log.Println("ownvpn server: failed to init: " + err.Error())
 			return
 		}
 		server.Run(ctx)
@@ -76,6 +76,11 @@ func main() {
 			return
 		}
 
-		client.Run(ctx, cfg)
+		if err := client.Init(cfg); err != nil {
+			log.Println("ownvpn client: failed to init: " + err.Error())
+			return
+		}
+
+		client.Run(ctx)
 	}
 }
