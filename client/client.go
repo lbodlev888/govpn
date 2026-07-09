@@ -131,6 +131,10 @@ func keepaliveLoop(ctx context.Context) {
 func udpReadLoop(ctx context.Context) {
 	buf := make([]byte, buffersize)
 	for {
+		if ctx.Err() != nil {
+			return
+		}
+
 		if s2cKey.Load() == nil {
 			<-time.After(100 * time.Millisecond)
 			continue
@@ -201,6 +205,10 @@ func udpReadLoop(ctx context.Context) {
 func tunReadLoop(ctx context.Context) {
 	packet := make([]byte, buffersize)
 	for {
+		if ctx.Err() != nil {
+			return
+		}
+
 		if c2sKey.Load() == nil {
 			<-time.After(100 * time.Millisecond)
 			continue
