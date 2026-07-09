@@ -28,13 +28,14 @@ const (
 var (
 	iface                     *water.Interface
 	s2cKey, c2sKey            atomic.Pointer[[chacha20poly1305.KeySize]byte]
-	lastNonceIn, lastNonceOut atomic.Uint64
+	lastNonceOut              atomic.Uint64
 	cipherChan                chan struct{}
 	serverAddr                *net.UDPAddr
 	conn                      *net.UDPConn
 	cfg                       *config.PeerConfig
 	decaps                    *mlkem.DecapsulationKey768
 	encaps                    *mlkem.EncapsulationKey768
+	filter proto.Filter
 )
 
 func Init(config config.PeerConfig) error {
@@ -171,12 +172,6 @@ func udpReadLoop(ctx context.Context) {
 		nonce := payload[:chacha20poly1305.NonceSize]
 		ciphertext := payload[chacha20poly1305.NonceSize:]
 
-		currentNonceIn := binary.BigEndian.Uint64(nonce)
-		if currentNonceIn <= lastNonceIn.Load() {
-			log.Println("Possible replay attack. Dropping packet")
-			continue
-		}
-
 		k := s2cKey.Load()
 		if k == nil {
 			continue
@@ -191,12 +186,13 @@ func udpReadLoop(ctx context.Context) {
 		frame, err := aead.Open(nil, nonce, ciphertext, nil)
 		if err != nil {
 			log.Println("Invalid encrypted frame: " + err.Error())
-			s2cKey.Store(nil)
-			c2sKey.Store(nil)
-			cipherChan <- struct{}{}
 			continue
 		}
-		lastNonceIn.Store(currentNonceIn)
+
+		currentNonceIn := binary.BigEndian.Uint64(nonce)
+		if !filter.ValidateNonce(currentNonceIn) {
+			continue
+		}
 
 		iface.Write(frame)
 	}
@@ -262,7 +258,7 @@ func rehandshakeLoop(ctx context.Context) {
 
 		s2cKey.Store(nil)
 		c2sKey.Store(nil)
-		lastNonceIn.Store(0)
+		filter.Reset()
 		lastNonceOut.Store(0)
 
 		log.Println("Re-handshaking...")
