@@ -43,7 +43,7 @@ func (f *Filter) ValidateNonce(seq uint64) bool {
 		f.lastNonceIn = seq
 	}
 
-	word := (seq / wordBits) % wordCount
+	word := (seq / wordBits) & (wordCount - 1)
 	bit := seq % wordBits
 	mask := uint64(1) << bit
 
