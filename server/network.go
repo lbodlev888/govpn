@@ -150,18 +150,16 @@ func handleData(payload []byte, src *net.UDPAddr) {
 	nonce := payload[:chacha20poly1305.NonceSize]
 	ciphertext := payload[chacha20poly1305.NonceSize:]
 
-	currentNonceIn := binary.BigEndian.Uint64(nonce)
-	if currentNonceIn <= peer.lastNonceIn {
-		log.Printf("Possible replay attack from %s. Dropping packet\n", peer.VirtualIP)
-		return
-	}
-
 	frame, err := cipher.Open(nil, nonce, ciphertext, nil)
 	if err != nil {
 		log.Printf("Failed to decrypt frame from %s: %v\n", src.String(), err.Error())
 		return
 	}
-	peer.lastNonceIn = currentNonceIn
+
+	currentNonceIn := binary.BigEndian.Uint64(nonce)
+	if !peer.filter.ValidateNonce(currentNonceIn) {
+		return
+	}
 
 	if len(frame) < 20 || frame[0]>>4 != 4 {
 		return

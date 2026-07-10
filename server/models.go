@@ -3,6 +3,8 @@ package server
 import (
 	"net"
 	"sync/atomic"
+
+	"github.com/lbodlev888/ownvpn/proto"
 )
 
 type peer struct {
@@ -12,5 +14,5 @@ type peer struct {
 	c2sKey       []byte
 	s2cKey       []byte
 	lastNonceOut atomic.Uint64
-	lastNonceIn  uint64
+	filter       proto.Filter
 }
