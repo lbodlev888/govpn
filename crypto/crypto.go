@@ -1,58 +1,59 @@
 package crypto
 
 import (
+	"crypto/ed25519"
 	"crypto/hkdf"
-	"crypto/mlkem"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
-	"log"
 )
 
 func GeneratePrivate() (string, error) {
-	decaps, err := mlkem.GenerateKey768()
+	_, sk, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		log.Println()
 		return "", fmt.Errorf("Could not generate decaps key: %w", err)
 	}
 
-	return base64.StdEncoding.EncodeToString(decaps.Bytes()), nil
+	return base64.StdEncoding.EncodeToString(sk.Seed()), nil
 }
 
-func GetPublicKey(pubKey string) (string, error) {
-	raw_decaps, err := base64.StdEncoding.DecodeString(pubKey)
+func GetPublicKey(privKey string) (string, error) {
+	seed, err := base64.StdEncoding.DecodeString(privKey)
 	if err != nil {
-		log.Println()
-		return "", fmt.Errorf("Could not decode private key: %w", err)
+		return "", fmt.Errorf("Invalid input private key: %w", err)
 	}
-
-	decaps, err := mlkem.NewDecapsulationKey768(raw_decaps)
-	if err != nil {
-		log.Println()
-		return "", fmt.Errorf("Could not import private key: %w", err)
+	if len(seed) != ed25519.SeedSize {
+		return "", fmt.Errorf("Invalid input size, should be %d", ed25519.SeedSize)
 	}
-
-	encaps := decaps.EncapsulationKey().Bytes()
-
-	return base64.StdEncoding.EncodeToString(encaps), nil
+	sk := ed25519.NewKeyFromSeed(seed)
+	pk, ok := sk.Public().(ed25519.PublicKey)
+	if !ok {
+		return "", fmt.Errorf("Failed to extract public key")
+	}
+	return base64.StdEncoding.EncodeToString(pk), nil
 }
 
-func ParseDecapsKey(decaps_str string) (*mlkem.DecapsulationKey768, error) {
-	raw_decaps, err := base64.StdEncoding.DecodeString(decaps_str)
+func ParsePrivateKey(privKey string) (ed25519.PrivateKey, error) {
+	seed, err := base64.StdEncoding.DecodeString(privKey)
 	if err != nil {
 		return nil, fmt.Errorf("Failed to decode private key: %w", err)
 	}
 
-	return mlkem.NewDecapsulationKey768(raw_decaps)
+	if len(seed) != ed25519.SeedSize {
+		return nil, fmt.Errorf("Invalid input size, should be %d", ed25519.SeedSize)
+	}
+
+	return ed25519.NewKeyFromSeed(seed), nil
 }
 
-func ParseEncapsKey(encaps_str string) (*mlkem.EncapsulationKey768, error) {
-	raw_encaps, err := base64.StdEncoding.DecodeString(encaps_str)
+func ParsePublicKey(pubKey string) (ed25519.PublicKey, error) {
+	pk, err := base64.StdEncoding.DecodeString(pubKey)
 	if err != nil {
 		return nil, fmt.Errorf("Failed to decode public key: %w", err)
 	}
 
-	return mlkem.NewEncapsulationKey768(raw_encaps)
+	return ed25519.PublicKey(pk), nil
 }
 
 func DeriveEncryptionKey(material, salt []byte, infoString string, length int) ([]byte, error) {
