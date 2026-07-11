@@ -6,7 +6,11 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"fmt"
+	"time"
+
+	"github.com/lbodlev888/ownvpn/proto"
 )
 
 func GeneratePrivate() (string, error) {
@@ -62,4 +66,55 @@ func ParsePublicKey(pubKey string) (ed25519.PublicKey, error) {
 
 func DeriveEncryptionKey(material, salt []byte, infoString string, length int) ([]byte, error) {
 	return hkdf.Key(sha256.New, material, salt, infoString, length)
+}
+
+func SignClientHello(privKey ed25519.PrivateKey, h *proto.ClientHello) error {
+	h.Timestamp = make([]byte, proto.TimestampLen)
+	binary.BigEndian.PutUint64(h.Timestamp, uint64(time.Now().Unix()))
+
+	payloadLen := len(h.Name) + proto.MLKEM768EncapsLen + proto.TimestampLen
+	payload := make([]byte, 0, payloadLen)
+	payload = append(payload, h.Name...)
+	payload = append(payload, h.EncapsKey...)
+	payload = append(payload, h.Timestamp...)
+
+	signature, err := privKey.Sign(nil, payload, &ed25519.Options{Context: "clientHello"})
+	if err != nil {
+		return fmt.Errorf("failed to sign client hello: %w", err)
+	}
+	h.Signature = signature
+	return nil
+}
+
+func SignServerHello(privKey ed25519.PrivateKey, h *proto.ServerHello) error {
+	payload := make([]byte, 0, proto.MLKEM768CiphertextLen)
+	payload = append(payload, h.Ciphertext...)
+
+	signature, err := privKey.Sign(nil, payload, &ed25519.Options{Context: "serverHello"})
+	if err != nil {
+		return fmt.Errorf("failed to sign server hello: %w", err)
+	}
+	h.Signature = signature
+	return nil
+}
+
+func CheckClientHello(pubKey ed25519.PublicKey, h proto.ClientHello) bool {
+	payloadLen := len(h.Name) + proto.MLKEM768EncapsLen + proto.TimestampLen
+	payload := make([]byte, 0, payloadLen)
+	payload = append(payload, h.Name...)
+	payload = append(payload, h.EncapsKey...)
+	payload = append(payload, h.Timestamp...)
+
+	timestamp := int64(binary.BigEndian.Uint64(h.Timestamp))
+	signTime := time.Unix(timestamp, 0)
+	diff := time.Since(signTime).Abs()
+
+	return diff < 2 * time.Second && ed25519.VerifyWithOptions(pubKey, payload, h.Signature, &ed25519.Options{Context: "clientHello"}) == nil
+}
+
+func CheckServerHello(pubKey ed25519.PublicKey, h proto.ServerHello) bool {
+	payload := make([]byte, 0, proto.MLKEM768CiphertextLen)
+	payload = append(payload, h.Ciphertext...)
+
+	return ed25519.VerifyWithOptions(pubKey, payload, h.Signature, &ed25519.Options{Context: "serverHello"}) == nil
 }
