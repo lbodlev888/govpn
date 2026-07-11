@@ -59,7 +59,7 @@ func SetupFullTunnel(endpoint, ifaceName string) error {
 }
 
 func ClearFullTunnel(endpoint string) error {
-	return runIP("route", "delete", endpoint, "via", gatewayAddr)
+	return runIP("route", "delete", endpoint)
 }
 
 func runIP(args ...string) error {

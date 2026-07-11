@@ -2,7 +2,7 @@ package server
 
 import (
 	"context"
-	"crypto/mlkem"
+	"crypto/ed25519"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -26,17 +26,19 @@ var (
 	allowedPeersMu sync.RWMutex
 	allowedPeers   = make(map[string]config.PeerConfig) //key is name of peer
 	wg             sync.WaitGroup
-	decapsKey      *mlkem.DecapsulationKey768
+	privKey ed25519.PrivateKey
 	iface          *water.Interface
 	udpConn        *net.UDPConn
-	cfg            config.ServerConfig
+	cfg            *config.ServerConfig
+	pendingMu sync.Mutex
+	pendingByAddr = make(map[string]*pendingSession) //key is src addr
 )
 
 func Init(serverConfiguration config.ServerConfig) error {
-	cfg = serverConfiguration
+	cfg = &serverConfiguration
 
 	var err error
-	decapsKey, err = crypto.ParseDecapsKey(cfg.DecapsKey)
+	privKey, err = crypto.ParsePrivateKey(cfg.PrivateKey)
 	if err != nil {
 		return fmt.Errorf("Init: could not import private key: %w", err)
 	}
@@ -80,7 +82,7 @@ func NewPeer(peer config.PeerConfig) error {
 	allowedPeersMu.Lock()
 	defer allowedPeersMu.Unlock()
 
-	if err := checkEncapsulation(peer.EncapsKey); err != nil {
+	if err := checkPublicKey(peer.PublicKey); err != nil {
 		return fmt.Errorf("NewPeer: invalid encapsulation key: %w", err)
 	}
 

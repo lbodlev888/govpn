@@ -2,8 +2,8 @@ package config
 
 type PeerConfig struct {
 	Name       string `json:"name"`
-	DecapsKey  string `json:"privkey,omitempty"`
-	EncapsKey  string `json:"pubkey"`
+	PrivateKey string `json:"privkey,omitempty"`
+	PublicKey  string `json:"pubkey"`
 	VirtualIP  string `json:"virtual_ip"`
 	Subnet     int    `json:"subnet,omitempty"`
 	Endpoint   string `json:"endpoint,omitempty"`
@@ -12,7 +12,7 @@ type PeerConfig struct {
 }
 
 type ServerConfig struct {
-	DecapsKey   string       `json:"privkey"`
+	PrivateKey  string       `json:"privkey"`
 	BindAddress string       `json:"bind_address"`
 	VirtualIP   string       `json:"virtual_ip"`
 	Subnet      int          `json:"subnet"`

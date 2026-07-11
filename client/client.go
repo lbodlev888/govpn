@@ -2,7 +2,7 @@ package client
 
 import (
 	"context"
-	"crypto/mlkem"
+	"crypto/ed25519"
 	"fmt"
 	"log"
 	"net"
@@ -29,16 +29,18 @@ var (
 	s2cKey, c2sKey atomic.Pointer[[chacha20poly1305.KeySize]byte]
 	lastNonceOut   atomic.Uint64
 	cipherChan     chan struct{}
+	serverHelloChan chan []byte
 	serverAddr     *net.UDPAddr
 	conn           *net.UDPConn
 	cfg            *config.PeerConfig
-	decaps         *mlkem.DecapsulationKey768
-	encaps         *mlkem.EncapsulationKey768
+	privKey ed25519.PrivateKey
+	pubKey ed25519.PublicKey
 	filter         proto.Filter
 )
 
 func Init(config config.PeerConfig) error {
 	cipherChan = make(chan struct{})
+	serverHelloChan = make(chan []byte, 1)
 	cfg = &config
 
 	if config.Endpoint == "" {
@@ -57,12 +59,12 @@ func Init(config config.PeerConfig) error {
 		}
 	}
 
-	decaps, err = crypto.ParseDecapsKey(config.DecapsKey)
+	privKey, err = crypto.ParsePrivateKey(config.PrivateKey)
 	if err != nil {
 		return fmt.Errorf("Could not import private key: %w", err)
 	}
 
-	encaps, err = crypto.ParseEncapsKey(config.EncapsKey)
+	pubKey, err = crypto.ParsePublicKey(config.PublicKey)
 	if err != nil {
 		return fmt.Errorf("Could not import public key: %w", err)
 	}
@@ -78,7 +80,7 @@ func Init(config config.PeerConfig) error {
 		return fmt.Errorf("Failed to connect to server: %w", err)
 	}
 
-	log.Println("Peer name: " + config.Name)
+	log.Println("Initiated with peer name: " + config.Name)
 
 	return nil
 }

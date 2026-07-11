@@ -3,6 +3,7 @@ package server
 import (
 	"net"
 	"sync/atomic"
+	"time"
 
 	"github.com/lbodlev888/ownvpn/proto"
 )
@@ -15,4 +16,11 @@ type peer struct {
 	s2cKey       []byte
 	lastNonceOut atomic.Uint64
 	filter       proto.Filter
+}
+
+type pendingSession struct {
+	peer *peer
+	name string
+	virtualIP string
+	createdAt time.Time
 }

@@ -2,9 +2,11 @@ package server
 
 import (
 	"context"
+	"crypto/mlkem"
 	"encoding/binary"
 	"log"
 	"net"
+	"time"
 
 	"github.com/lbodlev888/ownvpn/crypto"
 	"github.com/lbodlev888/ownvpn/proto"
@@ -33,14 +35,60 @@ func readFromPeers(ctx context.Context) {
 		case proto.MsgData:
 			handleData(pkt[1:], src)
 		case proto.MsgKeepAlive:
-			sendAckKeepAlive(pkt, src)
+			log.Println("Received keepalive from " + src.String())
+		case proto.MsgClientConfirm:
+			handleConfirm(pkt, src)
 		default:
 			log.Printf("Invalid packet from %s\n", net.IP(src.IP).String())
 		}
 	}
 }
 
-func sendAckKeepAlive(pkt []byte, src *net.UDPAddr) {
+func handleConfirm(pkt []byte, src *net.UDPAddr) {
+	pendingMu.Lock()
+	pend, ok := pendingByAddr[src.String()]
+	pendingMu.Unlock()
+	if !ok {
+		return
+	}
+
+	payload := pkt[1:]
+	if len(payload) < chacha20poly1305.NonceSize {
+		return
+	}
+
+	aead, err := chacha20poly1305.New(pend.peer.c2sKey)
+	if err != nil {
+		log.Println("Failed to init cipher: " + err.Error())
+		return
+	}
+
+	nonce := payload[:chacha20poly1305.NonceSize]
+	ciphertext := payload[chacha20poly1305.NonceSize:]
+
+	if _, err := aead.Open(nil, nonce, ciphertext, nil); err != nil {
+		return
+	}
+	if !pend.peer.filter.ValidateNonce(binary.BigEndian.Uint64(nonce)) {
+		return
+	}
+
+	pendingMu.Lock()
+	delete(pendingByAddr, src.String())
+	pendingMu.Unlock()
+
+	peersMu.Lock()
+	if old, ok := peersByIP[pend.virtualIP]; ok && old.Addr.String() != src.String() {
+		delete(peersByAddr, old.Addr.String())
+	}
+	peersByIP[pend.virtualIP] = pend.peer
+	peersByAddr[src.String()] = pend.peer
+	peersMu.Unlock()
+
+	log.Printf("Peer confirmed: %s -> %s (from %s)\n", pend.name, pend.virtualIP, src)
+}
+
+/*func sendAckKeepAlive(pkt []byte, src *net.UDPAddr) {
 	if proto.DecodeKeepAlive(pkt, proto.MsgKeepAliveSYN) {
 		if _, err := udpConn.WriteToUDP(proto.EncodeKeepAlive(proto.MsgKeepAliveACK), src); err != nil {
 			log.Println("Failed to send keepalive syn:" + err.Error())
@@ -48,7 +96,7 @@ func sendAckKeepAlive(pkt []byte, src *net.UDPAddr) {
 		return
 	}
 	log.Println("Received invalid keepalive from: " + src.String())
-}
+}*/
 
 func handleHandshake(pkt []byte, src *net.UDPAddr) {
 	clientHello, err := proto.DecodeClientHello(pkt)
@@ -70,62 +118,74 @@ func handleHandshake(pkt []byte, src *net.UDPAddr) {
 		return
 	}
 
-	encaps, err := crypto.ParseEncapsKey(peerCfg.EncapsKey)
+	pubKey, err := crypto.ParsePublicKey(peerCfg.PublicKey)
 	if err != nil {
 		log.Printf("Could not import public key of peer %s: %v\n", peerCfg.Name, err)
 		return
 	}
 
-	sharedKey2, ciphertext := encaps.Encapsulate()
-
-	sharedKey1, err := decapsKey.Decapsulate(clientHello.PublicData)
-	if err != nil {
-		log.Printf("Could not decapsulate ClientHello from %s: %v\n", peerCfg.Name, err)
+	if !crypto.CheckClientHello(pubKey, clientHello) {
+		log.Printf("Invalid signature on client hello from %s\n", peerCfg.Name)
 		return
 	}
 
-	final_key := append(sharedKey1, sharedKey2...)
-
-	c2sKey, err := crypto.DeriveEncryptionKey(final_key, nil, "c2s", chacha20poly1305.KeySize)
+	encaps, err := mlkem.NewEncapsulationKey768(clientHello.EncapsKey)
 	if err != nil {
-		log.Println("Failed to derive c2s encryption key: " + err.Error())
+		log.Println("Invalid encapsulation key: " + err.Error())
 		return
 	}
 
-	s2cKey, err := crypto.DeriveEncryptionKey(final_key, nil, "s2c", chacha20poly1305.KeySize)
-	if err != nil {
-		log.Println("Failed to derive s2c encryption key: " + err.Error())
+	sharedKey, ciphertext := encaps.Encapsulate()
+
+	serverHello := proto.ServerHello{Ciphertext: ciphertext}
+	if err := crypto.SignServerHello(privKey, &serverHello); err != nil {
+		log.Println("Failed to sign server hello: " + err.Error())
 		return
 	}
 
-	serverHelloBytes, err := proto.EncodeServerHello(proto.ServerHello{PublicData: ciphertext})
+	serverHelloBytes, err := proto.EncodeServerHello(serverHello)
 	if err != nil {
 		log.Println("Failed to encode ServerHello: " + err.Error())
 		return
-	}
+	}	
 
 	if _, err := udpConn.WriteToUDP(serverHelloBytes, src); err != nil {
 		log.Println("Failed to send ServerHello: " + err.Error())
 		return
 	}
 
-	peer := &peer{
+	c2sKey, err := crypto.DeriveEncryptionKey(sharedKey, nil, "c2s_" + peerCfg.Name, chacha20poly1305.KeySize)
+	if err != nil {
+		log.Println("Failed to derive c2s encryption key: " + err.Error())
+		return
+	}
+
+	s2cKey, err := crypto.DeriveEncryptionKey(sharedKey, nil, "s2c_" + peerCfg.Name, chacha20poly1305.KeySize)
+	if err != nil {
+		log.Println("Failed to derive s2c encryption key: " + err.Error())
+		return
+	}
+
+	newPeer := &peer{
 		Addr:      src,
 		VirtualIP: net.ParseIP(peerCfg.VirtualIP),
 		s2cKey:    s2cKey,
 		c2sKey:    c2sKey,
 	}
 
-	peersMu.Lock()
-	if old, ok := peersByIP[peerCfg.VirtualIP]; ok {
-		delete(peersByAddr, old.Addr.String())
-		log.Printf("Replacing existing session for %s (%s -> %s)\n", peerCfg.Name, old.Addr, src)
+	pendingMu.Lock()
+	for k, p := range pendingByAddr {
+		if time.Since(p.createdAt) > 5 * time.Second {
+			delete(pendingByAddr, k)
+		}
 	}
-	peersByIP[peerCfg.VirtualIP] = peer
-	peersByAddr[src.String()] = peer
-	peersMu.Unlock()
-
-	log.Printf("Peer connected: %s -> %s (from %s)\n", peerCfg.Name, peerCfg.VirtualIP, src)
+	pendingByAddr[src.String()] = &pendingSession{
+		peer: newPeer,
+		name: peerCfg.Name,
+		virtualIP: peerCfg.VirtualIP,
+		createdAt: time.Now(),
+	}
+	pendingMu.Unlock()
 }
 
 func handleData(payload []byte, src *net.UDPAddr) {
@@ -133,7 +193,6 @@ func handleData(payload []byte, src *net.UDPAddr) {
 	peer, ok := peersByAddr[src.String()]
 	peersMu.RUnlock()
 	if !ok || peer.disabled {
-		// unknown source; ignore (could be stale or spoofed)
 		return
 	}
 
@@ -141,7 +200,7 @@ func handleData(payload []byte, src *net.UDPAddr) {
 		return
 	}
 
-	cipher, err := chacha20poly1305.New(peer.c2sKey)
+	aead, err := chacha20poly1305.New(peer.c2sKey)
 	if err != nil {
 		log.Println("Failed to init cipher: " + err.Error())
 		return
@@ -150,7 +209,7 @@ func handleData(payload []byte, src *net.UDPAddr) {
 	nonce := payload[:chacha20poly1305.NonceSize]
 	ciphertext := payload[chacha20poly1305.NonceSize:]
 
-	frame, err := cipher.Open(nil, nonce, ciphertext, nil)
+	frame, err := aead.Open(nil, nonce, ciphertext, nil)
 	if err != nil {
 		log.Printf("Failed to decrypt frame from %s: %v\n", src.String(), err.Error())
 		return
