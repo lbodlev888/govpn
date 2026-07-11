@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"crypto/mlkem"
 	"encoding/binary"
 	"log"
 	"time"
@@ -39,11 +40,6 @@ func udpReadLoop(ctx context.Context) {
 			return
 		}
 
-		if s2cKey.Load() == nil {
-			<-time.After(100 * time.Millisecond)
-			continue
-		}
-
 		n, src, err := conn.ReadFrom(buf)
 		if err != nil {
 			if ctx.Err() != nil {
@@ -53,20 +49,33 @@ func udpReadLoop(ctx context.Context) {
 			continue
 		}
 
-		if s2cKey.Load() == nil || n < 1 || src.String() != serverAddr.String() {
+		if n < 1 || src.String() != serverAddr.String() {
 			continue
 		}
 
-		if buf[0] == proto.MsgKeepAlive {
-			keepaliveStatus := proto.DecodeKeepAlive(buf[:n], proto.MsgKeepAliveACK)
-			log.Printf("Received keepalive. Status: %t\n", keepaliveStatus)
-			if !keepaliveStatus {
-				c2sKey.Store(nil)
-				s2cKey.Store(nil)
-				cipherChan <- struct{}{}
+		if buf[0] == proto.MsgServerHello {
+			select {
+			case serverHelloChan <- append([]byte(nil), buf[:n]...):
+			default:
 			}
 			continue
 		}
+
+		if s2cKey.Load() == nil {
+			continue
+		}
+
+		/*if buf[0] == proto.MsgKeepAlive {
+			if !proto.DecodeKeepAlive(buf[:n], proto.MsgKeepAliveACK) {
+				c2sKey.Store(nil)
+				s2cKey.Store(nil)
+				select {
+				case cipherChan <- struct{}{}:
+				default:
+				}
+			}
+			continue
+		}*/
 
 		if buf[0] != proto.MsgData {
 			continue
@@ -127,18 +136,6 @@ func tunReadLoop(ctx context.Context) {
 			continue
 		}
 
-		if c2sKey.Load() == nil {
-			continue
-		}
-
-		nonce := make([]byte, chacha20poly1305.NonceSize)
-		n := lastNonceOut.Add(1)
-		binary.BigEndian.PutUint64(nonce, n)
-
-		out := make([]byte, 0, 1+len(nonce)+plen+chacha20poly1305.Overhead)
-		out = append(out, proto.MsgData)
-		out = append(out, nonce...)
-
 		k := c2sKey.Load()
 		if k == nil {
 			continue
@@ -149,6 +146,14 @@ func tunReadLoop(ctx context.Context) {
 			log.Println("Failed to init aead cipher: " + err.Error())
 			continue
 		}
+
+		nonce := make([]byte, chacha20poly1305.NonceSize)
+		n := lastNonceOut.Add(1)
+		binary.BigEndian.PutUint64(nonce, n)
+
+		out := make([]byte, 0, 1+len(nonce)+plen+chacha20poly1305.Overhead)
+		out = append(out, proto.MsgData)
+		out = append(out, nonce...)
 
 		out = aead.Seal(out, nonce, packet[:plen], nil)
 
@@ -175,15 +180,31 @@ func rehandshakeLoop(ctx context.Context) {
 
 		log.Println("Re-handshaking...")
 
-		sharedKey1, ciphertext := encaps.Encapsulate()
+		ephemeralMLKEM, err := mlkem.GenerateKey768()
+		if err != nil {
+			log.Println("Failed to generate ephemeral keypair: " + err.Error())
+			continue
+		}
 
-		clientHelloBytes, err := proto.EncodeClientHello(proto.ClientHello{
-			Name:       cfg.Name,
-			PublicData: ciphertext,
-		})
+		clientHello := proto.ClientHello{
+			Name: cfg.Name,
+			EncapsKey: ephemeralMLKEM.EncapsulationKey().Bytes(),
+		}
+
+		if err := crypto.SignClientHello(privKey, &clientHello); err != nil {
+			log.Println("Failed to sign client hello: " + err.Error())
+			continue
+		}
+
+		clientHelloBytes, err := proto.EncodeClientHello(clientHello)
 		if err != nil {
 			log.Println("Failed to encode ClientHello: " + err.Error())
 			continue
+		}
+
+		select {
+		case <- serverHelloChan:
+		default:
 		}
 
 		if _, err := conn.WriteTo(clientHelloBytes, serverAddr); err != nil {
@@ -192,33 +213,33 @@ func rehandshakeLoop(ctx context.Context) {
 			continue
 		}
 
-		respBuf := make([]byte, buffersize)
-		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-		n, src, err := conn.ReadFrom(respBuf)
-		if err != nil {
-			log.Println("Failed to read ServerHello: " + err.Error())
-			continue
-		}
-		conn.SetReadDeadline(time.Time{})
-		if src.String() != serverAddr.String() {
+		var respBuf []byte
+		select {
+		case <-ctx.Done():
+			return
+		case respBuf = <- serverHelloChan:
+		case <-time.After(2 * time.Second):
 			continue
 		}
 
-		serverHello, err := proto.DecodeServerHello(respBuf[:n])
+		serverHello, err := proto.DecodeServerHello(respBuf)
 		if err != nil {
 			log.Println("Invalid ServerHello: " + err.Error())
 			continue
 		}
+		
+		if !crypto.CheckServerHello(pubKey, serverHello) {
+			log.Println("Invalid signature from server")
+			continue
+		}
 
-		sharedKey2, err := decaps.Decapsulate(serverHello.PublicData)
+		sharedKey, err := ephemeralMLKEM.Decapsulate(serverHello.Ciphertext)
 		if err != nil {
 			log.Println("Could not decapsulate ServerHello: " + err.Error())
 			continue
 		}
 
-		final_key := append(sharedKey1, sharedKey2...)
-
-		c2s, err := crypto.DeriveEncryptionKey(final_key, nil, "c2s", chacha20poly1305.KeySize)
+		c2s, err := crypto.DeriveEncryptionKey(sharedKey, nil, "c2s_" + cfg.Name, chacha20poly1305.KeySize)
 		if err != nil {
 			log.Println("Could not derive encryption key: " + err.Error())
 			continue
@@ -227,7 +248,7 @@ func rehandshakeLoop(ctx context.Context) {
 		copy(k1[:], c2s)
 		c2sKey.Store(&k1)
 
-		s2c, err := crypto.DeriveEncryptionKey(final_key, nil, "s2c", chacha20poly1305.KeySize)
+		s2c, err := crypto.DeriveEncryptionKey(sharedKey, nil, "s2c_" + cfg.Name, chacha20poly1305.KeySize)
 		if err != nil {
 			log.Println("Could not derive encryption key: " + err.Error())
 			continue
@@ -235,6 +256,14 @@ func rehandshakeLoop(ctx context.Context) {
 		var k2 [chacha20poly1305.KeySize]byte
 		copy(k2[:], s2c)
 		s2cKey.Store(&k2)
+
+		confirmNonce := make([]byte, chacha20poly1305.NonceSize)
+		binary.BigEndian.PutUint64(confirmNonce, lastNonceOut.Add(1))
+		if aead, err := chacha20poly1305.New(k1[:]); err == nil {
+			confirm := append([]byte{proto.MsgClientConfirm}, confirmNonce...)
+			confirm = aead.Seal(confirm, confirmNonce, nil, nil)
+			conn.WriteTo(confirm, serverAddr)
+		}
 
 		log.Println("Latest handshake " + time.Now().Format(time.RFC1123))
 
