@@ -53,6 +53,10 @@ func ParsePublicKey(pubKey string) (ed25519.PublicKey, error) {
 		return nil, fmt.Errorf("Failed to decode public key: %w", err)
 	}
 
+	if len(pk) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf("Invalid public key size")
+	}
+
 	return ed25519.PublicKey(pk), nil
 }
 
