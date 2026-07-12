@@ -2,7 +2,8 @@ package server
 
 import (
 	"context"
-	"crypto/mlkem"
+	"crypto/ecdh"
+	"crypto/rand"
 	"encoding/binary"
 	"log"
 	"net"
@@ -88,16 +89,6 @@ func handleConfirm(pkt []byte, src *net.UDPAddr) {
 	log.Printf("Peer confirmed: %s -> %s (from %s)\n", pend.name, pend.virtualIP, src)
 }
 
-/*func sendAckKeepAlive(pkt []byte, src *net.UDPAddr) {
-	if proto.DecodeKeepAlive(pkt, proto.MsgKeepAliveSYN) {
-		if _, err := udpConn.WriteToUDP(proto.EncodeKeepAlive(proto.MsgKeepAliveACK), src); err != nil {
-			log.Println("Failed to send keepalive syn:" + err.Error())
-		}
-		return
-	}
-	log.Println("Received invalid keepalive from: " + src.String())
-}*/
-
 func handleHandshake(pkt []byte, src *net.UDPAddr) {
 	clientHello, err := proto.DecodeClientHello(pkt)
 	if err != nil {
@@ -129,15 +120,19 @@ func handleHandshake(pkt []byte, src *net.UDPAddr) {
 		return
 	}
 
-	encaps, err := mlkem.NewEncapsulationKey768(clientHello.EncapsKey)
+	remotePublicKey, err := ecdh.P256().NewPublicKey(clientHello.PublicKey)
 	if err != nil {
-		log.Println("Invalid encapsulation key: " + err.Error())
+		log.Println("Failed to parse remote ephemeral public key: " + err.Error())
 		return
 	}
 
-	sharedKey, ciphertext := encaps.Encapsulate()
+	ephemeralPrivKey, err := ecdh.P256().GenerateKey(rand.Reader)
+	if err != nil {
+		log.Println("Failed to generate ephemeral key: " + err.Error())
+		return
+	}
 
-	serverHello := proto.ServerHello{Ciphertext: ciphertext}
+	serverHello := proto.ServerHello{PublicKey: ephemeralPrivKey.PublicKey().Bytes()}
 	if err := crypto.SignServerHello(privKey, &serverHello); err != nil {
 		log.Println("Failed to sign server hello: " + err.Error())
 		return
@@ -154,13 +149,19 @@ func handleHandshake(pkt []byte, src *net.UDPAddr) {
 		return
 	}
 
-	c2sKey, err := crypto.DeriveEncryptionKey(sharedKey, nil, "c2s_" + peerCfg.Name, chacha20poly1305.KeySize)
+	sharedSecret, err := ephemeralPrivKey.ECDH(remotePublicKey)
+	if err != nil {
+		log.Println("Failed to derive shared secret: " + err.Error())
+		return
+	}
+
+	c2sKey, err := crypto.DeriveEncryptionKey(sharedSecret, nil, "c2s_" + peerCfg.Name, chacha20poly1305.KeySize)
 	if err != nil {
 		log.Println("Failed to derive c2s encryption key: " + err.Error())
 		return
 	}
 
-	s2cKey, err := crypto.DeriveEncryptionKey(sharedKey, nil, "s2c_" + peerCfg.Name, chacha20poly1305.KeySize)
+	s2cKey, err := crypto.DeriveEncryptionKey(sharedSecret, nil, "s2c_" + peerCfg.Name, chacha20poly1305.KeySize)
 	if err != nil {
 		log.Println("Failed to derive s2c encryption key: " + err.Error())
 		return
