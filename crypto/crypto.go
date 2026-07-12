@@ -72,10 +72,10 @@ func SignClientHello(privKey ed25519.PrivateKey, h *proto.ClientHello) error {
 	h.Timestamp = make([]byte, proto.TimestampLen)
 	binary.BigEndian.PutUint64(h.Timestamp, uint64(time.Now().Unix()))
 
-	payloadLen := len(h.Name) + proto.MLKEM768EncapsLen + proto.TimestampLen
+	payloadLen := len(h.Name) + proto.P256PublicLen + proto.TimestampLen
 	payload := make([]byte, 0, payloadLen)
 	payload = append(payload, h.Name...)
-	payload = append(payload, h.EncapsKey...)
+	payload = append(payload, h.PublicKey...)
 	payload = append(payload, h.Timestamp...)
 
 	signature, err := privKey.Sign(nil, payload, &ed25519.Options{Context: "clientHello"})
@@ -87,8 +87,8 @@ func SignClientHello(privKey ed25519.PrivateKey, h *proto.ClientHello) error {
 }
 
 func SignServerHello(privKey ed25519.PrivateKey, h *proto.ServerHello) error {
-	payload := make([]byte, 0, proto.MLKEM768CiphertextLen)
-	payload = append(payload, h.Ciphertext...)
+	payload := make([]byte, 0, proto.P256PublicLen)
+	payload = append(payload, h.PublicKey...)
 
 	signature, err := privKey.Sign(nil, payload, &ed25519.Options{Context: "serverHello"})
 	if err != nil {
@@ -99,10 +99,10 @@ func SignServerHello(privKey ed25519.PrivateKey, h *proto.ServerHello) error {
 }
 
 func CheckClientHello(pubKey ed25519.PublicKey, h proto.ClientHello) bool {
-	payloadLen := len(h.Name) + proto.MLKEM768EncapsLen + proto.TimestampLen
+	payloadLen := len(h.Name) + proto.P256PublicLen + proto.TimestampLen
 	payload := make([]byte, 0, payloadLen)
 	payload = append(payload, h.Name...)
-	payload = append(payload, h.EncapsKey...)
+	payload = append(payload, h.PublicKey...)
 	payload = append(payload, h.Timestamp...)
 
 	timestamp := int64(binary.BigEndian.Uint64(h.Timestamp))
@@ -113,8 +113,8 @@ func CheckClientHello(pubKey ed25519.PublicKey, h proto.ClientHello) bool {
 }
 
 func CheckServerHello(pubKey ed25519.PublicKey, h proto.ServerHello) bool {
-	payload := make([]byte, 0, proto.MLKEM768CiphertextLen)
-	payload = append(payload, h.Ciphertext...)
+	payload := make([]byte, 0, proto.P256PublicLen)
+	payload = append(payload, h.PublicKey...)
 
 	return ed25519.VerifyWithOptions(pubKey, payload, h.Signature, &ed25519.Options{Context: "serverHello"}) == nil
 }

@@ -14,9 +14,7 @@ const (
 	MsgKeepAliveACK
 	MsgClientConfirm
 
-	// ML-KEM-768 ciphertext length (fixed).
-	MLKEM768CiphertextLen = 1088
-	MLKEM768EncapsLen = 1184
+	P256PublicLen = 65
 	ED25519SignatureSize = 64
 	TimestampLen = 8
 
@@ -25,13 +23,13 @@ const (
 
 type ClientHello struct {
 	Name       string
-	EncapsKey []byte
+	PublicKey []byte
 	Timestamp []byte
 	Signature []byte
 }
 
 type ServerHello struct {
-	Ciphertext []byte
+	PublicKey []byte
 	Signature []byte
 }
 
@@ -58,18 +56,18 @@ func EncodeClientHello(h ClientHello) ([]byte, error) {
 	if len(h.Signature) != ED25519SignatureSize {
 		return nil, fmt.Errorf("invalid signature length %d", len(h.Signature))
 	}
-	if len(h.EncapsKey) != MLKEM768EncapsLen {
-		return nil, fmt.Errorf("invalid public data length %d", len(h.EncapsKey))
+	if len(h.PublicKey) != P256PublicLen {
+		return nil, fmt.Errorf("invalid public data length %d", len(h.PublicKey))
 	}
 	if len(h.Timestamp) != TimestampLen {
 		return nil, fmt.Errorf("invalid timestamp length %d", len(h.Timestamp))
 	}
 
-	buf := make([]byte, 0, 2 + len(h.Name) + MLKEM768EncapsLen + TimestampLen + ED25519SignatureSize)
+	buf := make([]byte, 0, 2 + len(h.Name) + P256PublicLen + TimestampLen + ED25519SignatureSize)
 	buf = append(buf, MsgClientHello)
 	buf = append(buf, byte(len(h.Name)))
 	buf = append(buf, h.Name...)
-	buf = append(buf, h.EncapsKey...)
+	buf = append(buf, h.PublicKey...)
 	buf = append(buf, h.Timestamp...)
 	buf = append(buf, h.Signature...)
 	return buf, nil
@@ -84,38 +82,38 @@ func DecodeClientHello(buf []byte) (ClientHello, error) {
 		return ClientHello{}, fmt.Errorf("client name is empty")
 	}
 
-	if len(buf) != 2 + nameLen + MLKEM768EncapsLen + TimestampLen + ED25519SignatureSize {
+	if len(buf) != 2 + nameLen + P256PublicLen + TimestampLen + ED25519SignatureSize {
 		return ClientHello{}, fmt.Errorf("malformed ClientHello: got %d bytes", len(buf))
 	}
 	return ClientHello{
 		Name:       string(buf[2 : 2+nameLen]),
-		EncapsKey: append([]byte(nil), buf[2+nameLen:2+nameLen+MLKEM768EncapsLen]...),
-		Timestamp: append([]byte(nil), buf[2+nameLen+MLKEM768EncapsLen:2+nameLen+MLKEM768EncapsLen+TimestampLen]...),
-		Signature: append([]byte(nil), buf[2+nameLen+MLKEM768EncapsLen+TimestampLen:]...),
+		PublicKey: append([]byte(nil), buf[2+nameLen:2+nameLen+P256PublicLen]...),
+		Timestamp: append([]byte(nil), buf[2+nameLen+P256PublicLen:2+nameLen+P256PublicLen+TimestampLen]...),
+		Signature: append([]byte(nil), buf[2+nameLen+P256PublicLen+TimestampLen:]...),
 	}, nil
 }
 
 func EncodeServerHello(h ServerHello) ([]byte, error) {
-	if len(h.Ciphertext) != MLKEM768CiphertextLen {
-		return nil, fmt.Errorf("invalid ciphertext length %d", len(h.Ciphertext))
+	if len(h.PublicKey) != P256PublicLen {
+		return nil, fmt.Errorf("invalid ciphertext length %d", len(h.PublicKey))
 	}
 	if len(h.Signature) != ED25519SignatureSize {
 		return nil, fmt.Errorf("invalid signature length %d", len(h.Signature))
 	}
 
-	buf := make([]byte, 1 + MLKEM768CiphertextLen + ED25519SignatureSize)
+	buf := make([]byte, 1 + P256PublicLen + ED25519SignatureSize)
 	buf[0] = MsgServerHello
-	copy(buf[1:], h.Ciphertext)
-	copy(buf[1 + MLKEM768CiphertextLen:], h.Signature)
+	copy(buf[1:], h.PublicKey)
+	copy(buf[1 + P256PublicLen:], h.Signature)
 	return buf, nil
 }
 
 func DecodeServerHello(buf []byte) (ServerHello, error) {
-	if len(buf) != 1 + MLKEM768CiphertextLen + ED25519SignatureSize || buf[0] != MsgServerHello {
+	if len(buf) != 1 + P256PublicLen + ED25519SignatureSize || buf[0] != MsgServerHello {
 		return ServerHello{}, fmt.Errorf("malformed serverHello")
 	}
 	return ServerHello{
-		Ciphertext: append([]byte(nil), buf[1:1+MLKEM768CiphertextLen]...),
-		Signature: append([]byte(nil), buf[1 + MLKEM768CiphertextLen:]...),
+		PublicKey: append([]byte(nil), buf[1:1+P256PublicLen]...),
+		Signature: append([]byte(nil), buf[1 + P256PublicLen:]...),
 	}, nil
 }
