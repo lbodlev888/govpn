@@ -2,7 +2,8 @@ package client
 
 import (
 	"context"
-	"crypto/mlkem"
+	"crypto/ecdh"
+	"crypto/rand"
 	"encoding/binary"
 	"log"
 	"time"
@@ -64,18 +65,6 @@ func udpReadLoop(ctx context.Context) {
 		if s2cKey.Load() == nil {
 			continue
 		}
-
-		/*if buf[0] == proto.MsgKeepAlive {
-			if !proto.DecodeKeepAlive(buf[:n], proto.MsgKeepAliveACK) {
-				c2sKey.Store(nil)
-				s2cKey.Store(nil)
-				select {
-				case cipherChan <- struct{}{}:
-				default:
-				}
-			}
-			continue
-		}*/
 
 		if buf[0] != proto.MsgData {
 			continue
@@ -180,15 +169,15 @@ func rehandshakeLoop(ctx context.Context) {
 
 		log.Println("Re-handshaking...")
 
-		ephemeralMLKEM, err := mlkem.GenerateKey768()
+		ephemeralPrivKey, err := ecdh.P256().GenerateKey(rand.Reader)
 		if err != nil {
-			log.Println("Failed to generate ephemeral keypair: " + err.Error())
+			log.Println("Failed to generate ephemeral private key: " + err.Error())
 			continue
 		}
 
 		clientHello := proto.ClientHello{
 			Name: cfg.Name,
-			EncapsKey: ephemeralMLKEM.EncapsulationKey().Bytes(),
+			PublicKey: ephemeralPrivKey.PublicKey().Bytes(),
 		}
 
 		if err := crypto.SignClientHello(privKey, &clientHello); err != nil {
@@ -233,13 +222,15 @@ func rehandshakeLoop(ctx context.Context) {
 			continue
 		}
 
-		sharedKey, err := ephemeralMLKEM.Decapsulate(serverHello.Ciphertext)
+		remotePublic, err := ecdh.P256().NewPublicKey(serverHello.PublicKey)
 		if err != nil {
-			log.Println("Could not decapsulate ServerHello: " + err.Error())
-			continue
+			log.Println("Failed to parse remote ephemeral public key: " + err.Error())
+			return
 		}
 
-		c2s, err := crypto.DeriveEncryptionKey(sharedKey, nil, "c2s_" + cfg.Name, chacha20poly1305.KeySize)
+		sharedSecret, err := ephemeralPrivKey.ECDH(remotePublic)
+
+		c2s, err := crypto.DeriveEncryptionKey(sharedSecret, nil, "c2s_" + cfg.Name, chacha20poly1305.KeySize)
 		if err != nil {
 			log.Println("Could not derive encryption key: " + err.Error())
 			continue
@@ -248,7 +239,7 @@ func rehandshakeLoop(ctx context.Context) {
 		copy(k1[:], c2s)
 		c2sKey.Store(&k1)
 
-		s2c, err := crypto.DeriveEncryptionKey(sharedKey, nil, "s2c_" + cfg.Name, chacha20poly1305.KeySize)
+		s2c, err := crypto.DeriveEncryptionKey(sharedSecret, nil, "s2c_" + cfg.Name, chacha20poly1305.KeySize)
 		if err != nil {
 			log.Println("Could not derive encryption key: " + err.Error())
 			continue
