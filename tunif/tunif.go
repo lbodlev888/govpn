@@ -11,8 +11,6 @@ import (
 
 const MTU = "1420"
 
-var gatewayAddr string
-
 func SetupInterface(localAddr string) (*water.Interface, error) {
 	iface, err := water.New(water.Config{DeviceType: water.TUN, PlatformSpecificParams: water.PlatformSpecificParams{Name: "bvpn%d"}})
 	if err != nil {
@@ -52,7 +50,7 @@ func SetupFullTunnel(endpoint, ifaceName string) error {
 	if err != nil {
 		return err
 	}
-	gatewayAddr = ip.String()
+	gatewayAddr := ip.String()
 
 	err = runIP("route", "add", endpoint, "via", gatewayAddr)
 	return err
