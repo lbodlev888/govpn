@@ -74,7 +74,7 @@ func EncodeClientHello(h ClientHello) ([]byte, error) {
 }
 
 func DecodeClientHello(buf []byte) (ClientHello, error) {
-	if len(buf) < 1258 || buf[0] != MsgClientHello { //minimal clientHello has to be at least 1258 cause of 2 + timestamp + signature + encaps key
+	if len(buf) < 2 + P256PublicLen + TimestampLen + ED25519SignatureSize || buf[0] != MsgClientHello {
 		return ClientHello{}, fmt.Errorf("not a clientHello")
 	}
 	nameLen := int(buf[1])
