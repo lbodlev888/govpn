@@ -2,6 +2,7 @@ package tunif
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 
@@ -9,61 +10,46 @@ import (
 	"github.com/songgao/water"
 )
 
-const MTU = "1420"
-
-var gatewayAddr string
+const MTU = 1420
 
 func SetupInterface(localAddr string) (*water.Interface, error) {
-	iface, err := water.New(water.Config{DeviceType: water.TUN, PlatformSpecificParams: water.PlatformSpecificParams{Name: "bvpn%d"}})
-	if err != nil {
-		panic("Failed to init interface:" + err.Error())
+	if _, _, err := net.ParseCIDR(localAddr); err != nil {
+		return nil, fmt.Errorf("Invalid interface address %q: %w", localAddr, err)
 	}
 
-	err = runIP("link", "set", "dev", iface.Name(), "mtu", MTU)
+	iface, err := newTUN(localAddr)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to set MTU: %w", err)
+		return nil, fmt.Errorf("Failed to init interface: %w", err)
 	}
 
-	err = runIP("addr", "add", localAddr, "dev", iface.Name())
-	if err != nil {
-		return nil, fmt.Errorf("Failed to local IP address: %w", err)
-	}
-
-	err = runIP("link", "set", "dev", iface.Name(), "up")
-	if err != nil {
-		return nil, fmt.Errorf("Failed to start: %w", err)
+	if err := configureInterface(iface.Name(), localAddr); err != nil {
+		iface.Close()
+		return nil, err
 	}
 
 	return iface, nil
 }
 
 func SetupFullTunnel(endpoint, ifaceName string) error {
-	err := runIP("route", "add", "0.0.0.0/1", "dev", ifaceName)
-	if err != nil {
-		return err
-	}
-
-	err = runIP("route", "add", "128.0.0.0/1", "dev", ifaceName)
-	if err != nil {
-		return err
+	if err := addTunnelRoutes(ifaceName); err != nil {
+		return fmt.Errorf("Failed to route traffic into the tunnel: %w", err)
 	}
 
 	ip, err := gateway.DiscoverGateway()
 	if err != nil {
 		return err
 	}
-	gatewayAddr = ip.String()
+	gatewayAddr := ip.String()
 
-	err = runIP("route", "add", endpoint, "via", gatewayAddr)
-	return err
+	return addBypassRoute(endpoint, gatewayAddr)
 }
 
 func ClearFullTunnel(endpoint string) error {
-	return runIP("route", "delete", endpoint)
+	return delBypassRoute(endpoint)
 }
 
-func runIP(args ...string) error {
-	cmd := exec.Command("ip", args...)
+func run(name string, args ...string) error {
+	cmd := exec.Command(name, args...)
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
