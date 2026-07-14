@@ -26,12 +26,12 @@ var (
 	allowedPeersMu sync.RWMutex
 	allowedPeers   = make(map[string]config.PeerConfig) //key is name of peer
 	wg             sync.WaitGroup
-	privKey ed25519.PrivateKey
+	privKey        ed25519.PrivateKey
 	iface          *water.Interface
 	udpConn        *net.UDPConn
 	cfg            *config.ServerConfig
-	pendingMu sync.Mutex
-	pendingByAddr = make(map[string]*pendingSession) //key is src addr
+	pendingMu      sync.Mutex
+	pendingByAddr  = make(map[string]*pendingSession) //key is src addr
 )
 
 func Init(serverConfiguration config.ServerConfig) error {

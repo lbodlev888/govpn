@@ -109,7 +109,7 @@ func CheckClientHello(pubKey ed25519.PublicKey, h proto.ClientHello) bool {
 	signTime := time.Unix(timestamp, 0)
 	diff := time.Since(signTime).Abs()
 
-	return diff < 2 * time.Second && ed25519.VerifyWithOptions(pubKey, payload, h.Signature, &ed25519.Options{Context: "clientHello"}) == nil
+	return diff < 2*time.Second && ed25519.VerifyWithOptions(pubKey, payload, h.Signature, &ed25519.Options{Context: "clientHello"}) == nil
 }
 
 func CheckServerHello(pubKey ed25519.PublicKey, h proto.ServerHello) bool {

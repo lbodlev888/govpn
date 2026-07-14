@@ -14,7 +14,7 @@ func newTUN(localAddr string) (*water.Interface, error) {
 	return water.New(water.Config{
 		DeviceType: water.TUN,
 		PlatformSpecificParams: water.PlatformSpecificParams{
-			Name: adapterName,
+			Name:    adapterName,
 			Network: localAddr,
 		},
 	})

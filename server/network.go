@@ -147,20 +147,20 @@ func handleHandshake(pkt []byte, src *net.UDPAddr) {
 	if err != nil {
 		log.Println("Failed to encode ServerHello: " + err.Error())
 		return
-	}	
+	}
 
 	if _, err := udpConn.WriteToUDP(serverHelloBytes, src); err != nil {
 		log.Println("Failed to send ServerHello: " + err.Error())
 		return
 	}
 
-	c2sKey, err := crypto.DeriveEncryptionKey(sharedKey, nil, "c2s_" + peerCfg.Name, chacha20poly1305.KeySize)
+	c2sKey, err := crypto.DeriveEncryptionKey(sharedKey, nil, "c2s_"+peerCfg.Name, chacha20poly1305.KeySize)
 	if err != nil {
 		log.Println("Failed to derive c2s encryption key: " + err.Error())
 		return
 	}
 
-	s2cKey, err := crypto.DeriveEncryptionKey(sharedKey, nil, "s2c_" + peerCfg.Name, chacha20poly1305.KeySize)
+	s2cKey, err := crypto.DeriveEncryptionKey(sharedKey, nil, "s2c_"+peerCfg.Name, chacha20poly1305.KeySize)
 	if err != nil {
 		log.Println("Failed to derive s2c encryption key: " + err.Error())
 		return
@@ -175,13 +175,13 @@ func handleHandshake(pkt []byte, src *net.UDPAddr) {
 
 	pendingMu.Lock()
 	for k, p := range pendingByAddr {
-		if time.Since(p.createdAt) > 5 * time.Second {
+		if time.Since(p.createdAt) > 5*time.Second {
 			delete(pendingByAddr, k)
 		}
 	}
 	pendingByAddr[src.String()] = &pendingSession{
-		peer: newPeer,
-		name: peerCfg.Name,
+		peer:      newPeer,
+		name:      peerCfg.Name,
 		virtualIP: peerCfg.VirtualIP,
 		createdAt: time.Now(),
 	}
