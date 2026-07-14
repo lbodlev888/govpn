@@ -187,7 +187,7 @@ func rehandshakeLoop(ctx context.Context) {
 		}
 
 		clientHello := proto.ClientHello{
-			Name: cfg.Name,
+			Name:      cfg.Name,
 			EncapsKey: ephemeralMLKEM.EncapsulationKey().Bytes(),
 		}
 
@@ -203,7 +203,7 @@ func rehandshakeLoop(ctx context.Context) {
 		}
 
 		select {
-		case <- serverHelloChan:
+		case <-serverHelloChan:
 		default:
 		}
 
@@ -217,7 +217,7 @@ func rehandshakeLoop(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case respBuf = <- serverHelloChan:
+		case respBuf = <-serverHelloChan:
 		case <-time.After(2 * time.Second):
 			continue
 		}
@@ -227,7 +227,7 @@ func rehandshakeLoop(ctx context.Context) {
 			log.Println("Invalid ServerHello: " + err.Error())
 			continue
 		}
-		
+
 		if !crypto.CheckServerHello(pubKey, serverHello) {
 			log.Println("Invalid signature from server")
 			continue
@@ -239,7 +239,7 @@ func rehandshakeLoop(ctx context.Context) {
 			continue
 		}
 
-		c2s, err := crypto.DeriveEncryptionKey(sharedKey, nil, "c2s_" + cfg.Name, chacha20poly1305.KeySize)
+		c2s, err := crypto.DeriveEncryptionKey(sharedKey, nil, "c2s_"+cfg.Name, chacha20poly1305.KeySize)
 		if err != nil {
 			log.Println("Could not derive encryption key: " + err.Error())
 			continue
@@ -248,7 +248,7 @@ func rehandshakeLoop(ctx context.Context) {
 		copy(k1[:], c2s)
 		c2sKey.Store(&k1)
 
-		s2c, err := crypto.DeriveEncryptionKey(sharedKey, nil, "s2c_" + cfg.Name, chacha20poly1305.KeySize)
+		s2c, err := crypto.DeriveEncryptionKey(sharedKey, nil, "s2c_"+cfg.Name, chacha20poly1305.KeySize)
 		if err != nil {
 			log.Println("Could not derive encryption key: " + err.Error())
 			continue

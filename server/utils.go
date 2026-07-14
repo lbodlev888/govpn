@@ -26,6 +26,6 @@ func checkPublicKey(pubKey string) error {
 	if len(pk) != ed25519.PublicKeySize {
 		return fmt.Errorf("Public key has invalid size")
 	}
-	
+
 	return nil
 }

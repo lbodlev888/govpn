@@ -19,8 +19,8 @@ type peer struct {
 }
 
 type pendingSession struct {
-	peer *peer
-	name string
+	peer      *peer
+	name      string
 	virtualIP string
 	createdAt time.Time
 }

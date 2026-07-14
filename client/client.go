@@ -25,17 +25,17 @@ const (
 )
 
 var (
-	iface          *water.Interface
-	s2cKey, c2sKey atomic.Pointer[[chacha20poly1305.KeySize]byte]
-	lastNonceOut   atomic.Uint64
-	cipherChan     chan struct{}
+	iface           *water.Interface
+	s2cKey, c2sKey  atomic.Pointer[[chacha20poly1305.KeySize]byte]
+	lastNonceOut    atomic.Uint64
+	cipherChan      chan struct{}
 	serverHelloChan chan []byte
-	serverAddr     *net.UDPAddr
-	conn           *net.UDPConn
-	cfg            *config.PeerConfig
-	privKey ed25519.PrivateKey
-	pubKey ed25519.PublicKey
-	filter         proto.Filter
+	serverAddr      *net.UDPAddr
+	conn            *net.UDPConn
+	cfg             *config.PeerConfig
+	privKey         ed25519.PrivateKey
+	pubKey          ed25519.PublicKey
+	filter          proto.Filter
 )
 
 func Init(config config.PeerConfig) error {
