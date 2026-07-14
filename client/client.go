@@ -54,7 +54,13 @@ func Init(config config.PeerConfig) error {
 	}
 
 	if config.FullTunnel {
-		if err := tunif.SetupFullTunnel(strings.Split(config.Endpoint, ":")[0], iface.Name()); err != nil {
+		endpoint, _, found := strings.Cut(config.Endpoint, ":")
+		if !found {
+			return fmt.Errorf("Init: invalid endpoint: should be <address>:<port>")
+		}
+
+		if err := tunif.SetupFullTunnel(endpoint, iface.Name()); err != nil {
+			tunif.ClearFullTunnel(endpoint)
 			return fmt.Errorf("Init: failed to setup full tunnel: %w", err)
 		}
 	}
