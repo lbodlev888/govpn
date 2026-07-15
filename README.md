@@ -1,11 +1,15 @@
-# ownvpn
+<p align="center">
+  <img src="assets/govpn.png" width="500" alt="Project logo">
+</p>
+
+# GoVPN
 
 A VPN library written from scratch in Go — no OpenVPN, no WireGuard, no TLS. Peers connect over
 UDP to a central hub server that routes IPv4 traffic between them, or out to the internet. Every
 session is authenticated with Ed25519 signatures and encrypted with keys derived from an ephemeral
 ML-KEM-768 (FIPS 203) key exchange.
 
-ownvpn is a **library**, not a daemon. The tunnel data plane, the hub server, the crypto, the wire
+govpn is a **library**, not a daemon. The tunnel data plane, the hub server, the crypto, the wire
 codec and the TUN plumbing are exposed as importable packages, so you can embed an encrypted
 overlay network into your own application — a CLI, a systemd service, or a web admin dashboard that
 manages peers at runtime. A reference CLI lives in [`examples/sample_client`](examples/sample_client).
@@ -70,7 +74,7 @@ manages peers at runtime. A reference CLI lives in [`examples/sample_client`](ex
 ## Installation
 
 ```sh
-go get github.com/lbodlev888/ownvpn
+go get github.com/lbodlev888/govpn
 ```
 
 ## Quick start
@@ -102,8 +106,8 @@ import (
 	"os"
 	"os/signal"
 
-	"github.com/lbodlev888/ownvpn/config"
-	"github.com/lbodlev888/ownvpn/server"
+	"github.com/lbodlev888/govpn/config"
+	"github.com/lbodlev888/govpn/server"
 )
 
 func main() {
@@ -359,7 +363,7 @@ go server.Run(ctx) // data plane runs in the background
 //
 // ... and persist them when you're done:
 data, _ := server.MarshalPeerSettings()
-os.WriteFile("/etc/ownvpn/config.json", data, 0600)
+os.WriteFile("/etc/govpn/config.json", data, 0600)
 ```
 
 Two things to know before you build on this:
@@ -487,7 +491,7 @@ or client whose clock has drifted will fail every handshake. Run NTP on both end
 
 The signature scheme is the last classical component in the stack. **ML-DSA (FIPS 204) is expected to
 land in the Go standard library as `crypto/mldsa` in Go 1.27**; when it does, Ed25519 will be replaced
-with ML-DSA and ownvpn becomes fully post-quantum, with no classical primitive left in the handshake.
+with ML-DSA and govpn becomes fully post-quantum, with no classical primitive left in the handshake.
 
 The wire format is already set up for it: signatures are length-checked against a constant, and
 switching the algorithm means changing `proto.ED25519SignatureSize`, the key parsers in `crypto`, and
