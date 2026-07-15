@@ -9,9 +9,9 @@ import (
 	"net"
 	"sync"
 
-	"github.com/lbodlev888/ownvpn/config"
-	"github.com/lbodlev888/ownvpn/crypto"
-	"github.com/lbodlev888/ownvpn/tunif"
+	"github.com/lbodlev888/govpn/config"
+	"github.com/lbodlev888/govpn/crypto"
+	"github.com/lbodlev888/govpn/tunif"
 	"github.com/songgao/water"
 )
 

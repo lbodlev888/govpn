@@ -5,7 +5,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/lbodlev888/ownvpn/proto"
+	"github.com/lbodlev888/govpn/proto"
 )
 
 type peer struct {

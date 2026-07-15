@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/lbodlev888/ownvpn/proto"
+	"github.com/lbodlev888/govpn/proto"
 )
 
 func GeneratePrivate() (string, error) {
