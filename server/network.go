@@ -8,8 +8,8 @@ import (
 	"net"
 	"time"
 
-	"github.com/lbodlev888/ownvpn/crypto"
-	"github.com/lbodlev888/ownvpn/proto"
+	"github.com/lbodlev888/govpn/crypto"
+	"github.com/lbodlev888/govpn/proto"
 	"golang.org/x/crypto/chacha20poly1305"
 )
 

@@ -1,4 +1,4 @@
-module github.com/lbodlev888/ownvpn
+module github.com/lbodlev888/govpn
 
 go 1.26.2
 

@@ -9,10 +9,10 @@ import (
 	"os"
 	"os/signal"
 
-	"github.com/lbodlev888/ownvpn/client"
-	"github.com/lbodlev888/ownvpn/config"
-	"github.com/lbodlev888/ownvpn/crypto"
-	"github.com/lbodlev888/ownvpn/server"
+	"github.com/lbodlev888/govpn/client"
+	"github.com/lbodlev888/govpn/config"
+	"github.com/lbodlev888/govpn/crypto"
+	"github.com/lbodlev888/govpn/server"
 )
 
 func main() {
