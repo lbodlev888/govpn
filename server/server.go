@@ -71,8 +71,8 @@ func Run(ctx context.Context) {
 
 	wg.Go(func() {
 		<-ctx.Done()
-		iface.Close()
-		udpConn.Close()
+		_ = iface.Close()
+		_ = udpConn.Close()
 	})
 
 	wg.Wait()
@@ -163,7 +163,6 @@ func DisablePeer(name string) {
 	defer allowedPeersMu.Unlock()
 	peer, ok := allowedPeers[name]
 	if !ok {
-		log.Println("allowed peer not found")
 		return
 	}
 	peer.Disabled = true
@@ -173,14 +172,12 @@ func DisablePeer(name string) {
 	defer peersMu.Unlock()
 	virtualPeer, ok := peersByIP[peer.VirtualIP]
 	if !ok {
-		log.Println("virtual peer not found")
 		return
 	}
 	virtualPeer.disabled = true
 
 	logicalPeer, ok := peersByAddr[virtualPeer.Addr.String()]
 	if !ok {
-		log.Println("logical peer not found")
 		return
 	}
 	logicalPeer.disabled = true

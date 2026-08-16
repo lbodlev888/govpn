@@ -50,40 +50,40 @@ func Init(config config.PeerConfig) error {
 	var err error
 	iface, err = tunif.SetupInterface(fmt.Sprintf("%s/%d", config.VirtualIP, config.Subnet))
 	if err != nil {
-		return fmt.Errorf("Could not create tun interface: %w", err)
+		return fmt.Errorf("could not create tun interface: %w", err)
 	}
 
 	if config.FullTunnel {
 		endpoint, _, found := strings.Cut(config.Endpoint, ":")
 		if !found {
-			return fmt.Errorf("Init: invalid endpoint: should be <address>:<port>")
+			return fmt.Errorf("init: invalid endpoint: should be <address>:<port>")
 		}
 
 		if err := tunif.SetupFullTunnel(endpoint, iface.Name()); err != nil {
-			tunif.ClearFullTunnel(endpoint)
-			return fmt.Errorf("Init: failed to setup full tunnel: %w", err)
+			_ = tunif.ClearFullTunnel(endpoint)
+			return fmt.Errorf("init: failed to setup full tunnel: %w", err)
 		}
 	}
 
 	privKey, err = crypto.ParsePrivateKey(config.PrivateKey)
 	if err != nil {
-		return fmt.Errorf("Could not import private key: %w", err)
+		return fmt.Errorf("could not import private key: %w", err)
 	}
 
 	pubKey, err = crypto.ParsePublicKey(config.PublicKey)
 	if err != nil {
-		return fmt.Errorf("Could not import public key: %w", err)
+		return fmt.Errorf("could not import public key: %w", err)
 	}
 
 	serverAddr, err = net.ResolveUDPAddr("udp", config.Endpoint)
 	if err != nil {
-		return fmt.Errorf("Could not resolve endpoint: %w", err)
+		return fmt.Errorf("could not resolve endpoint: %w", err)
 	}
 
 	lAddr, _ := net.ResolveUDPAddr("udp", "0.0.0.0:0")
 	conn, err = net.ListenUDP("udp", lAddr)
 	if err != nil {
-		return fmt.Errorf("Failed to connect to server: %w", err)
+		return fmt.Errorf("failed to connect to server: %w", err)
 	}
 
 	log.Println("Initiated with peer name: " + config.Name)
@@ -107,8 +107,8 @@ func Run(ctx context.Context) {
 				log.Println("Failed to clear full tunnel: " + err.Error())
 			}
 		}
-		conn.Close()
-		iface.Close()
+		_ = conn.Close()
+		_ = iface.Close()
 	})
 
 	wg.Wait()

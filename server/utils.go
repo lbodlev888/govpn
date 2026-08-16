@@ -20,11 +20,11 @@ func loadAllowedPeers() {
 func checkPublicKey(pubKey string) error {
 	pk, err := base64.StdEncoding.DecodeString(pubKey)
 	if err != nil {
-		return fmt.Errorf("Invalid public key: %w", err)
+		return fmt.Errorf("invalid public key: %w", err)
 	}
 
 	if len(pk) != ed25519.PublicKeySize {
-		return fmt.Errorf("Public key has invalid size")
+		return fmt.Errorf("public key has invalid size")
 	}
 
 	return nil

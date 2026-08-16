@@ -28,12 +28,12 @@ func configureInterface(name, localAddr string) error {
 
 	if err := run("netsh", "interface", "ipv4", "set", "address",
 		"name="+name, "source=static", "address="+addr, "mask="+mask, "gateway=none"); err != nil {
-		return fmt.Errorf("Failed to set local IP address: %w", err)
+		return fmt.Errorf("failed to set local IP address: %w", err)
 	}
 
 	if err := run("netsh", "interface", "ipv4", "set", "subinterface", name,
 		"mtu="+strconv.Itoa(MTU), "store=active"); err != nil {
-		return fmt.Errorf("Failed to set MTU: %w", err)
+		return fmt.Errorf("failed to set MTU: %w", err)
 	}
 
 	return nil
