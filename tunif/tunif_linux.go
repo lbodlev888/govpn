@@ -16,15 +16,15 @@ func newTUN(localAddr string) (*water.Interface, error) {
 
 func configureInterface(name, localAddr string) error {
 	if err := run("ip", "link", "set", "dev", name, "mtu", strconv.Itoa(MTU)); err != nil {
-		return fmt.Errorf("Failed to set MTU: %w", err)
+		return fmt.Errorf("failed to set MTU: %w", err)
 	}
 
 	if err := run("ip", "addr", "add", localAddr, "dev", name); err != nil {
-		return fmt.Errorf("Failed to set local IP address: %w", err)
+		return fmt.Errorf("failed to set local IP address: %w", err)
 	}
 
 	if err := run("ip", "link", "set", "dev", name, "up"); err != nil {
-		return fmt.Errorf("Failed to start: %w", err)
+		return fmt.Errorf("failed to start: %w", err)
 	}
 
 	return nil

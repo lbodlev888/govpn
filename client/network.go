@@ -65,18 +65,6 @@ func udpReadLoop(ctx context.Context) {
 			continue
 		}
 
-		/*if buf[0] == proto.MsgKeepAlive {
-			if !proto.DecodeKeepAlive(buf[:n], proto.MsgKeepAliveACK) {
-				c2sKey.Store(nil)
-				s2cKey.Store(nil)
-				select {
-				case cipherChan <- struct{}{}:
-				default:
-				}
-			}
-			continue
-		}*/
-
 		if buf[0] != proto.MsgData {
 			continue
 		}
@@ -111,7 +99,7 @@ func udpReadLoop(ctx context.Context) {
 			continue
 		}
 
-		iface.Write(frame)
+		_, _ = iface.Write(frame)
 	}
 }
 
@@ -219,6 +207,7 @@ func rehandshakeLoop(ctx context.Context) {
 			return
 		case respBuf = <-serverHelloChan:
 		case <-time.After(2 * time.Second):
+			log.Println("ServerHello timeout")
 			continue
 		}
 
@@ -262,7 +251,7 @@ func rehandshakeLoop(ctx context.Context) {
 		if aead, err := chacha20poly1305.New(k1[:]); err == nil {
 			confirm := append([]byte{proto.MsgClientConfirm}, confirmNonce...)
 			confirm = aead.Seal(confirm, confirmNonce, nil, nil)
-			conn.WriteTo(confirm, serverAddr)
+			_, _ = conn.WriteTo(confirm, serverAddr)
 		}
 
 		log.Println("Latest handshake " + time.Now().Format(time.RFC1123))

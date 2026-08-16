@@ -14,16 +14,16 @@ const MTU = 1420
 
 func SetupInterface(localAddr string) (*water.Interface, error) {
 	if _, _, err := net.ParseCIDR(localAddr); err != nil {
-		return nil, fmt.Errorf("Invalid interface address %q: %w", localAddr, err)
+		return nil, fmt.Errorf("invalid interface address %q: %w", localAddr, err)
 	}
 
 	iface, err := newTUN(localAddr)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to init interface: %w", err)
+		return nil, fmt.Errorf("failed to init interface: %w", err)
 	}
 
 	if err := configureInterface(iface.Name(), localAddr); err != nil {
-		iface.Close()
+		_ = iface.Close()
 		return nil, err
 	}
 
@@ -32,7 +32,7 @@ func SetupInterface(localAddr string) (*water.Interface, error) {
 
 func SetupFullTunnel(endpoint, ifaceName string) error {
 	if err := addTunnelRoutes(ifaceName); err != nil {
-		return fmt.Errorf("Failed to route traffic into the tunnel: %w", err)
+		return fmt.Errorf("failed to route traffic into the tunnel: %w", err)
 	}
 
 	ip, err := gateway.DiscoverGateway()
