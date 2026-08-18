@@ -252,6 +252,9 @@ func rehandshakeLoop(ctx context.Context) {
 			confirm := append([]byte{proto.MsgClientConfirm}, confirmNonce...)
 			confirm = aead.Seal(confirm, confirmNonce, nil, nil)
 			_, _ = conn.WriteTo(confirm, serverAddr)
+		} else {
+			log.Println("Failed to init cipher instance: " + err.Error())
+			continue
 		}
 
 		log.Println("Latest handshake " + time.Now().Format(time.RFC1123))
