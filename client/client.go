@@ -42,8 +42,8 @@ var (
 
 func Init(config config.PeerConfig) error {
 	cipherChan = make(chan struct{})
-	serverHelloChan = make(chan []byte, 1)
-	keepAliveChan = make(chan []byte, 1)
+	serverHelloChan = make(chan []byte)
+	keepAliveChan = make(chan []byte)
 	cfg = &config
 
 	if config.Endpoint == "" {

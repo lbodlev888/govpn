@@ -26,8 +26,12 @@ func keepaliveLoop(ctx context.Context) {
 			continue
 		}
 
+		select {
+		case <-keepAliveChan:
+		default:
+		}
+
 		sendEncrypted(proto.MsgKeepAliveSYN, nil)
-		log.Println("Keepalive sent")
 
 		var keepaliveAck []byte
 		select {
@@ -42,6 +46,9 @@ func keepaliveLoop(ctx context.Context) {
 		}
 
 		if _, err := parseEncrypted(proto.MsgKeepAliveACK, keepaliveAck); err != nil {
+			c2sKey.Store(nil)
+			s2cKey.Store(nil)
+			cipherChan <- struct{}{}
 			log.Println("invalid keepaliveAck")
 		}
 	}
@@ -50,12 +57,11 @@ func keepaliveLoop(ctx context.Context) {
 func udpReadLoop(ctx context.Context) {
 	buf := make([]byte, buffersize)
 	for {
-		if ctx.Err() != nil {
-			return
-		}
-
 		n, src, err := conn.ReadFrom(buf)
 		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
 			log.Println("Failed to read from server: " + err.Error())
 			continue
 		}
@@ -66,16 +72,10 @@ func udpReadLoop(ctx context.Context) {
 
 		switch buf[0] {
 		case proto.MsgServerHello:
-			select {
-			case serverHelloChan <- append([]byte(nil), buf[:n]...):
-			default:
-			}
+			serverHelloChan <- append([]byte(nil), buf[:n]...)
 			continue
 		case proto.MsgKeepAliveACK:
-			select {
-			case keepAliveChan <- append([]byte(nil), buf[:n]...):
-			default:
-			}
+			keepAliveChan <- append([]byte(nil), buf[:n]...)
 			continue
 		}
 
@@ -83,9 +83,7 @@ func udpReadLoop(ctx context.Context) {
 			continue
 		}
 
-		packet := buf[:n]
-
-		frame, err := parseEncrypted(proto.MsgData, packet)
+		frame, err := parseEncrypted(proto.MsgData, buf[:n])
 		if err != nil {
 			log.Println("Failed parsing encrypted packet: " + err.Error())
 			continue
@@ -102,6 +100,7 @@ func tunReadLoop(ctx context.Context) {
 			return
 		}
 
+		//ignore all packets until a valid session gets established
 		if c2sKey.Load() == nil {
 			<-time.After(100 * time.Millisecond)
 			continue
@@ -116,7 +115,7 @@ func tunReadLoop(ctx context.Context) {
 			continue
 		}
 
-		sendEncrypted(proto.MsgData, packet[:plen])
+		sendEncrypted(proto.MsgData, append([]byte(nil), packet[:plen]...))
 	}
 }
 
