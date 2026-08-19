@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/mlkem"
 	"encoding/binary"
+	"fmt"
 	"log"
 	"time"
 
@@ -17,18 +18,31 @@ func keepaliveLoop(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(25 * time.Second):
+		case <-time.After(keepaliveTimeout):
 		}
 
-		//even if here we do not encrypt we dont need to send keepalives if session isnt initialized
+		//do not send keepalives if the session isnt initialized
 		if c2sKey.Load() == nil || s2cKey.Load() == nil {
 			continue
 		}
 
-		keepaliveBytes := proto.EncodeKeepAlive(proto.MsgKeepAliveSYN)
-		_, err := conn.WriteTo(keepaliveBytes, serverAddr)
-		if err != nil {
-			log.Println("Failed to send keepalive: " + err.Error())
+		sendEncrypted(proto.MsgKeepAliveSYN, nil)
+		log.Println("Keepalive sent")
+
+		var keepaliveAck []byte
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(5 * time.Second):
+			c2sKey.Store(nil)
+			s2cKey.Store(nil)
+			cipherChan <- struct{}{}
+			continue
+		case keepaliveAck = <- keepAliveChan:
+		}
+
+		if _, err := parseEncrypted(proto.MsgKeepAliveACK, keepaliveAck); err != nil {
+			log.Println("invalid keepaliveAck")
 		}
 	}
 }
@@ -42,20 +56,24 @@ func udpReadLoop(ctx context.Context) {
 
 		n, src, err := conn.ReadFrom(buf)
 		if err != nil {
-			if ctx.Err() != nil {
-				return
-			}
 			log.Println("Failed to read from server: " + err.Error())
 			continue
 		}
 
-		if n < 1 || src.String() != serverAddr.String() {
+		if src.String() != serverAddr.String() {
 			continue
 		}
 
-		if buf[0] == proto.MsgServerHello {
+		switch buf[0] {
+		case proto.MsgServerHello:
 			select {
 			case serverHelloChan <- append([]byte(nil), buf[:n]...):
+			default:
+			}
+			continue
+		case proto.MsgKeepAliveACK:
+			select {
+			case keepAliveChan <- append([]byte(nil), buf[:n]...):
 			default:
 			}
 			continue
@@ -65,37 +83,11 @@ func udpReadLoop(ctx context.Context) {
 			continue
 		}
 
-		if buf[0] != proto.MsgData {
-			continue
-		}
+		packet := buf[:n]
 
-		payload := buf[1:n]
-		if len(payload) < chacha20poly1305.NonceSize {
-			continue
-		}
-
-		nonce := payload[:chacha20poly1305.NonceSize]
-		ciphertext := payload[chacha20poly1305.NonceSize:]
-
-		k := s2cKey.Load()
-		if k == nil {
-			continue
-		}
-
-		aead, err := chacha20poly1305.New(k[:])
+		frame, err := parseEncrypted(proto.MsgData, packet)
 		if err != nil {
-			log.Println("Failed to init aead cipher: " + err.Error())
-			continue
-		}
-
-		frame, err := aead.Open(nil, nonce, ciphertext, nil)
-		if err != nil {
-			log.Println("Invalid encrypted frame: " + err.Error())
-			continue
-		}
-
-		currentNonceIn := binary.BigEndian.Uint64(nonce)
-		if !filter.ValidateNonce(currentNonceIn) {
+			log.Println("Failed parsing encrypted packet: " + err.Error())
 			continue
 		}
 
@@ -124,34 +116,7 @@ func tunReadLoop(ctx context.Context) {
 			continue
 		}
 
-		k := c2sKey.Load()
-		if k == nil {
-			continue
-		}
-
-		aead, err := chacha20poly1305.New(k[:])
-		if err != nil {
-			log.Println("Failed to init aead cipher: " + err.Error())
-			continue
-		}
-
-		nonce := make([]byte, chacha20poly1305.NonceSize)
-		n := lastNonceOut.Add(1)
-		binary.BigEndian.PutUint64(nonce, n)
-
-		out := make([]byte, 0, 1+len(nonce)+plen+chacha20poly1305.Overhead)
-		out = append(out, proto.MsgData)
-		out = append(out, nonce...)
-
-		out = aead.Seal(out, nonce, packet[:plen], nil)
-
-		if _, err := conn.WriteTo(out, serverAddr); err != nil {
-			log.Println("Failed to write packet: " + err.Error())
-			s2cKey.Store(nil)
-			c2sKey.Store(nil)
-			cipherChan <- struct{}{}
-			continue
-		}
+		sendEncrypted(proto.MsgData, packet[:plen])
 	}
 }
 
@@ -222,13 +187,13 @@ func rehandshakeLoop(ctx context.Context) {
 			continue
 		}
 
-		sharedKey, err := ephemeralMLKEM.Decapsulate(serverHello.Ciphertext)
+		sharedSecret, err := ephemeralMLKEM.Decapsulate(serverHello.Ciphertext)
 		if err != nil {
 			log.Println("Could not decapsulate ServerHello: " + err.Error())
 			continue
 		}
 
-		c2s, err := crypto.DeriveEncryptionKey(sharedKey, nil, "c2s_"+cfg.Name, chacha20poly1305.KeySize)
+		c2s, err := crypto.DeriveEncryptionKey(sharedSecret, nil, "c2s_" + cfg.Name, chacha20poly1305.KeySize)
 		if err != nil {
 			log.Println("Could not derive encryption key: " + err.Error())
 			continue
@@ -237,7 +202,7 @@ func rehandshakeLoop(ctx context.Context) {
 		copy(k1[:], c2s)
 		c2sKey.Store(&k1)
 
-		s2c, err := crypto.DeriveEncryptionKey(sharedKey, nil, "s2c_"+cfg.Name, chacha20poly1305.KeySize)
+		s2c, err := crypto.DeriveEncryptionKey(sharedSecret, nil, "s2c_" + cfg.Name, chacha20poly1305.KeySize)
 		if err != nil {
 			log.Println("Could not derive encryption key: " + err.Error())
 			continue
@@ -246,24 +211,69 @@ func rehandshakeLoop(ctx context.Context) {
 		copy(k2[:], s2c)
 		s2cKey.Store(&k2)
 
-		confirmNonce := make([]byte, chacha20poly1305.NonceSize)
-		binary.BigEndian.PutUint64(confirmNonce, lastNonceOut.Add(1))
-		if aead, err := chacha20poly1305.New(k1[:]); err == nil {
-			confirm := append([]byte{proto.MsgClientConfirm}, confirmNonce...)
-			confirm = aead.Seal(confirm, confirmNonce, nil, nil)
-			_, _ = conn.WriteTo(confirm, serverAddr)
-		} else {
-			log.Println("Failed to init cipher instance: " + err.Error())
-			continue
-		}
-
+		sendEncrypted(proto.MsgClientConfirm, nil)
 		log.Println("Latest handshake " + time.Now().Format(time.RFC1123))
 
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(handshake_timeout): //re-establish encrypted connection
+		case <-time.After(handshakeTimeout): //re-establish encrypted connection
 		case <-cipherChan:
 		}
 	}
+}
+
+func sendEncrypted(messageType byte, packet []byte) {
+	key := c2sKey.Load()
+	if key == nil {
+		return
+	}
+
+	cipher, err := chacha20poly1305.New(key[:])
+	if err != nil {
+		log.Println("Failed to init cipher: " + err.Error())
+		return
+	}
+
+	nonce := make([]byte, chacha20poly1305.NonceSize)
+	binary.BigEndian.PutUint64(nonce, lastNonceOut.Add(1))
+
+	out := make([]byte, 1, 1+chacha20poly1305.NonceSize+len(packet)+chacha20poly1305.Overhead)
+	out[0] = messageType
+	out = append(out, nonce...)
+	out = cipher.Seal(out, nonce, packet, out[:13])
+
+	if _, err := conn.WriteToUDP(out, serverAddr); err != nil {
+		log.Println("Failed to send to server: " + err.Error())
+	}
+}
+
+func parseEncrypted(expectedFlag byte, packet []byte) ([]byte, error) {
+	if len(packet) < chacha20poly1305.NonceSize || packet[0] != expectedFlag {
+		return nil, fmt.Errorf("invalid packet: too small or header mismatch")
+	}
+
+	s2c := s2cKey.Load()
+	if s2c == nil {
+		return nil, fmt.Errorf("session not initialized")
+	}
+
+	nonce := packet[1:1+chacha20poly1305.NonceSize]
+	ciphertext := packet[1+chacha20poly1305.NonceSize:]
+
+	if !filter.ValidateNonce(binary.BigEndian.Uint64(nonce)) {
+		return nil, fmt.Errorf("invalid nonce")
+	}
+
+	cipher, err := chacha20poly1305.New(s2c[:])
+	if err != nil {
+		return nil, fmt.Errorf("failed to init cipher: %w", err)
+	}
+
+	plaintext, err := cipher.Open(nil, nonce, ciphertext, packet[:13])
+	if err != nil {
+		return nil, fmt.Errorf("failed decrypting: %w", err)
+	}
+
+	return plaintext, nil
 }
