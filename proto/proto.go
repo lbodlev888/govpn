@@ -1,15 +1,11 @@
 package proto
 
-import (
-	"crypto/rand"
-	"fmt"
-)
+import "fmt"
 
 const (
 	MsgClientHello byte = iota + 1
 	MsgServerHello
 	MsgData
-	MsgKeepAlive
 	MsgKeepAliveSYN
 	MsgKeepAliveACK
 	MsgClientConfirm
@@ -33,22 +29,6 @@ type ClientHello struct {
 type ServerHello struct {
 	Ciphertext []byte
 	Signature  []byte
-}
-
-func EncodeKeepAlive(flag byte) []byte {
-	buf := make([]byte, 5)
-	buf[0] = MsgKeepAlive
-	buf[1] = flag
-	rand.Read(buf[2:])
-
-	return buf
-}
-
-func DecodeKeepAlive(buf []byte, expected_flag byte) bool {
-	if len(buf) != 5 || buf[0] != MsgKeepAlive {
-		return false
-	}
-	return buf[1] == expected_flag
 }
 
 func EncodeClientHello(h ClientHello) ([]byte, error) {
