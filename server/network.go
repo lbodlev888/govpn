@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/mlkem"
 	"encoding/binary"
+	"fmt"
 	"log"
 	"net"
 	"time"
@@ -33,9 +34,9 @@ func readFromPeers(ctx context.Context) {
 		case proto.MsgClientHello:
 			handleHandshake(pkt, src)
 		case proto.MsgData:
-			handleData(pkt[1:], src)
-		case proto.MsgKeepAlive:
-			log.Println("Received keepalive from " + src.String())
+			handleData(pkt, src)
+		case proto.MsgKeepAliveSYN:
+			handleKeepAlive(pkt, src)
 		case proto.MsgClientConfirm:
 			handleConfirm(pkt, src)
 		default:
@@ -44,7 +45,24 @@ func readFromPeers(ctx context.Context) {
 	}
 }
 
-func handleConfirm(pkt []byte, src *net.UDPAddr) {
+func handleKeepAlive(packet []byte, src *net.UDPAddr) {
+	peersMu.RLock()
+	peer, ok := peersByAddr[src.String()]
+	peersMu.RUnlock()
+	if !ok {
+		log.Println("Got keepalive from unexisting peer")
+		return
+	}
+
+	if _, err := parseEncrypted(peer, packet); err != nil {
+		log.Println("handleKeepAlive: " + err.Error())
+		return
+	}
+
+	sendEncrypted(peer, proto.MsgKeepAliveACK, nil)
+}
+
+func handleConfirm(packet []byte, src *net.UDPAddr) {
 	pendingMu.Lock()
 	pend, ok := pendingByAddr[src.String()]
 	pendingMu.Unlock()
@@ -52,24 +70,7 @@ func handleConfirm(pkt []byte, src *net.UDPAddr) {
 		return
 	}
 
-	payload := pkt[1:]
-	if len(payload) < chacha20poly1305.NonceSize {
-		return
-	}
-
-	aead, err := chacha20poly1305.New(pend.peer.c2sKey)
-	if err != nil {
-		log.Println("Failed to init cipher: " + err.Error())
-		return
-	}
-
-	nonce := payload[:chacha20poly1305.NonceSize]
-	ciphertext := payload[chacha20poly1305.NonceSize:]
-
-	if _, err := aead.Open(nil, nonce, ciphertext, nil); err != nil {
-		return
-	}
-	if !pend.peer.filter.ValidateNonce(binary.BigEndian.Uint64(nonce)) {
+	if _, err := parseEncrypted(pend.peer, packet); err != nil {
 		return
 	}
 
@@ -87,16 +88,6 @@ func handleConfirm(pkt []byte, src *net.UDPAddr) {
 
 	log.Printf("Peer confirmed: %s -> %s (from %s)\n", pend.name, pend.virtualIP, src)
 }
-
-/*func sendAckKeepAlive(pkt []byte, src *net.UDPAddr) {
-	if proto.DecodeKeepAlive(pkt, proto.MsgKeepAliveSYN) {
-		if _, err := udpConn.WriteToUDP(proto.EncodeKeepAlive(proto.MsgKeepAliveACK), src); err != nil {
-			log.Println("Failed to send keepalive syn:" + err.Error())
-		}
-		return
-	}
-	log.Println("Received invalid keepalive from: " + src.String())
-}*/
 
 func handleHandshake(pkt []byte, src *net.UDPAddr) {
 	clientHello, err := proto.DecodeClientHello(pkt)
@@ -154,13 +145,13 @@ func handleHandshake(pkt []byte, src *net.UDPAddr) {
 		return
 	}
 
-	c2sKey, err := crypto.DeriveEncryptionKey(sharedKey, nil, "c2s_"+peerCfg.Name, chacha20poly1305.KeySize)
+	c2sKey, err := crypto.DeriveEncryptionKey(sharedKey, nil, "c2s_" + peerCfg.Name, chacha20poly1305.KeySize)
 	if err != nil {
 		log.Println("Failed to derive c2s encryption key: " + err.Error())
 		return
 	}
 
-	s2cKey, err := crypto.DeriveEncryptionKey(sharedKey, nil, "s2c_"+peerCfg.Name, chacha20poly1305.KeySize)
+	s2cKey, err := crypto.DeriveEncryptionKey(sharedKey, nil, "s2c_" + peerCfg.Name, chacha20poly1305.KeySize)
 	if err != nil {
 		log.Println("Failed to derive s2c encryption key: " + err.Error())
 		return
@@ -175,7 +166,7 @@ func handleHandshake(pkt []byte, src *net.UDPAddr) {
 
 	pendingMu.Lock()
 	for k, p := range pendingByAddr {
-		if time.Since(p.createdAt) > 5*time.Second {
+		if time.Since(p.createdAt) > 5 * time.Second {
 			delete(pendingByAddr, k)
 		}
 	}
@@ -188,7 +179,7 @@ func handleHandshake(pkt []byte, src *net.UDPAddr) {
 	pendingMu.Unlock()
 }
 
-func handleData(payload []byte, src *net.UDPAddr) {
+func handleData(packet []byte, src *net.UDPAddr) {
 	peersMu.RLock()
 	peer, ok := peersByAddr[src.String()]
 	peersMu.RUnlock()
@@ -196,31 +187,13 @@ func handleData(payload []byte, src *net.UDPAddr) {
 		return
 	}
 
-	if len(payload) < chacha20poly1305.NonceSize {
-		return
-	}
-
-	aead, err := chacha20poly1305.New(peer.c2sKey)
+	frame, err := parseEncrypted(peer, packet)
 	if err != nil {
-		log.Println("Failed to init cipher: " + err.Error())
+		log.Println("handleData: " + err.Error())
 		return
 	}
 
-	nonce := payload[:chacha20poly1305.NonceSize]
-	ciphertext := payload[chacha20poly1305.NonceSize:]
-
-	frame, err := aead.Open(nil, nonce, ciphertext, nil)
-	if err != nil {
-		log.Printf("Failed to decrypt frame from %s: %v\n", src.String(), err.Error())
-		return
-	}
-
-	currentNonceIn := binary.BigEndian.Uint64(nonce)
-	if !peer.filter.ValidateNonce(currentNonceIn) {
-		return
-	}
-
-	if len(frame) < 20 || frame[0]>>4 != 4 {
+	if len(frame) < 20 || frame[0] >> 4 != 4 {
 		return
 	}
 
@@ -234,13 +207,13 @@ func handleData(payload []byte, src *net.UDPAddr) {
 		return
 	}
 
-	sendEncrypted(dstPeer, frame)
+	sendEncrypted(dstPeer, proto.MsgData, frame)
 }
 
 func readFromIface(ctx context.Context) {
-	packet := make([]byte, buffersize)
+	buf := make([]byte, buffersize)
 	for {
-		n, err := iface.Read(packet)
+		n, err := iface.Read(buf)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
@@ -248,13 +221,13 @@ func readFromIface(ctx context.Context) {
 			log.Println("Failed to read from iface: " + err.Error())
 			continue
 		}
-		actualData := packet[:n]
+		packet := buf[:n]
 
-		if len(actualData) < 20 || actualData[0]>>4 != 4 {
+		if len(packet) < 20 || packet[0] >> 4 != 4 {
 			continue
 		}
 
-		dstIP := net.IP(actualData[16:20]).String()
+		dstIP := net.IP(packet[16:20]).String()
 		peersMu.RLock()
 		peer, ok := peersByIP[dstIP]
 		peersMu.RUnlock()
@@ -262,11 +235,11 @@ func readFromIface(ctx context.Context) {
 			continue
 		}
 
-		sendEncrypted(peer, actualData)
+		sendEncrypted(peer, proto.MsgData, packet)
 	}
 }
 
-func sendEncrypted(peer *peer, frame []byte) {
+func sendEncrypted(peer *peer, messageType byte, frame []byte) {
 	cipher, err := chacha20poly1305.New(peer.s2cKey)
 	if err != nil {
 		log.Println("Failed to init cipher: " + err.Error())
@@ -274,15 +247,39 @@ func sendEncrypted(peer *peer, frame []byte) {
 	}
 
 	nonce := make([]byte, chacha20poly1305.NonceSize)
-	n := peer.lastNonceOut.Add(1)
-	binary.BigEndian.PutUint64(nonce, n)
+	binary.BigEndian.PutUint64(nonce, peer.lastNonceOut.Add(1))
 
-	out := make([]byte, 0, 1+len(nonce)+len(frame)+chacha20poly1305.Overhead)
-	out = append(out, proto.MsgData)
+	out := make([]byte, 1, 1+chacha20poly1305.NonceSize+len(frame)+chacha20poly1305.Overhead)
+	out[0] = messageType
 	out = append(out, nonce...)
-	out = cipher.Seal(out, nonce, frame, nil)
+	out = cipher.Seal(out, nonce, frame, out[:13])
 
 	if _, err := udpConn.WriteToUDP(out, peer.Addr); err != nil {
 		log.Println("Failed to send to peer " + peer.Addr.String() + ": " + err.Error())
 	}
+}
+
+func parseEncrypted(peer *peer, packet []byte) ([]byte, error) {
+	if len(packet) < 1 + chacha20poly1305.NonceSize {
+		return nil, fmt.Errorf("packet too small")
+	}
+
+	nonce := packet[1:1 + chacha20poly1305.NonceSize]
+	ciphertext := packet[1 + chacha20poly1305.NonceSize:]
+
+	if !peer.filter.ValidateNonce(binary.BigEndian.Uint64(nonce)) {
+		return nil, fmt.Errorf("invalid nonce")
+	}
+
+	cipher, err := chacha20poly1305.New(peer.c2sKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to init cipher: %w", err)
+	}
+
+	plaintext, err := cipher.Open(nil, nonce, ciphertext, packet[:13])
+	if err != nil {
+		return nil, fmt.Errorf("failed decrypting: %w", err)
+	}
+
+	return plaintext, nil
 }

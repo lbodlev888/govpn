@@ -67,9 +67,10 @@ manages peers at runtime. A reference CLI lives in [`examples/sample_client`](ex
 ## Requirements
 
 - **Go 1.26+** — the library uses the standard-library `crypto/mlkem` and `crypto/hkdf` packages.
-- **Linux.** The TUN device is created with `songgao/water` and configured by shelling out to the
+- **Linux** The TUN device is created with `songgao/water` and configured by shelling out to the
+- **Windows** The TUN device is created using the same library, also wintun.dll has to be in the same folder as the executable
   `ip` command, so `iproute2` must be installed.
-- **Root, or `CAP_NET_ADMIN`.** Required to create a TUN interface and modify the routing table.
+- **Root, or `CAP_NET_ADMIN`** Required to create a TUN interface and modify the routing table.
 
 ## Installation
 
@@ -467,8 +468,9 @@ mappings open.
 | `0x01` | ClientHello | client → server | 2 + name + 1184 + 8 + 64 |
 | `0x02` | ServerHello | server → client | 1 + 1088 + 64 |
 | `0x03` | Data | both | 1 + 12 + payload + 16 |
-| `0x04` | KeepAlive | client → server | 5 |
-| `0x07` | ClientConfirm | client → server | 1 + 12 + 16 |
+| `0x04` | KeepAliveSYN | client → server | 1 + 12 + 16 (header + nonce + tag) |
+| `0x05` | KeepAliveACK | server → client | 1 + 12 + 16 |
+| `0x06` | ClientConfirm | client → server | 1 + 12 + 16 |
 
 ---
 
@@ -509,7 +511,6 @@ Worth knowing before you deploy this:
 - **The hub sees plaintext.** Peer-to-peer traffic is decrypted and re-encrypted at the server. This
   is transport security between peer and hub, not end-to-end encryption between peers. Trust the hub.
 - **IPv4 only.** Frames that are not IPv4 are dropped at both ends.
-- **Linux only,** and it shells out to `ip` to configure interfaces and routes.
 - **One server and one client per process** (package-level state).
 - **The protocol has no version field,** so there is no in-band way to negotiate a future cipher
   change — a flag day is required.

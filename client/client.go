@@ -21,7 +21,8 @@ import (
 
 const (
 	buffersize        = 2048
-	handshake_timeout = 5 * time.Minute
+	handshakeTimeout = 5 * time.Minute
+	keepaliveTimeout = 25 * time.Second
 )
 
 var (
@@ -30,6 +31,7 @@ var (
 	lastNonceOut    atomic.Uint64
 	cipherChan      chan struct{}
 	serverHelloChan chan []byte
+	keepAliveChan   chan []byte
 	serverAddr      *net.UDPAddr
 	conn            *net.UDPConn
 	cfg             *config.PeerConfig
@@ -40,11 +42,12 @@ var (
 
 func Init(config config.PeerConfig) error {
 	cipherChan = make(chan struct{})
-	serverHelloChan = make(chan []byte, 1)
+	serverHelloChan = make(chan []byte)
+	keepAliveChan = make(chan []byte)
 	cfg = &config
 
 	if config.Endpoint == "" {
-		return fmt.Errorf("Init: missing endpoint")
+		return fmt.Errorf("init: missing endpoint")
 	}
 
 	var err error
