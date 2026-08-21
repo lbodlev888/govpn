@@ -20,7 +20,7 @@ func main() {
 	serverMode := flag.Bool("server", false, "Run in server mode")
 	generateKey := flag.Bool("genkey", false, "Generate cryptographic keys")
 	pubKey := flag.String("pubkey", "", "Get public key from private key")
-	configFile := flag.String("config", "/etc/ownvpn/config.json", "Provide the path to configuration file")
+	configFile := flag.String("config", "/etc/govpn/config.json", "Provide the path to configuration file")
 
 	flag.Parse()
 
