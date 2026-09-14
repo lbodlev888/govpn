@@ -43,7 +43,9 @@ func Init(serverConfiguration config.ServerConfig) error {
 		return fmt.Errorf("Init: could not import private key: %w", err)
 	}
 
-	loadAllowedPeers()
+	if err := loadAllowedPeers(); err != nil {
+		return fmt.Errorf("Init: failed to load allowed peers: %w", err)
+	}
 
 	iface, err = tunif.SetupInterface(cfg.Address)
 	if err != nil {
