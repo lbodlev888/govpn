@@ -56,6 +56,10 @@ func Init(config config.PeerConfig) error {
 		return fmt.Errorf("could not create tun interface: %w", err)
 	}
 
+	if err := tunif.SetupRoutes(iface.Name(), config.Routes); err != nil {
+		return fmt.Errorf("could not add routes: %w", err)
+	}
+
 	if config.FullTunnel {
 		endpoint, _, found := strings.Cut(config.Endpoint, ":")
 		if !found {
