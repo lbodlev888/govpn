@@ -159,7 +159,7 @@ func handleHandshake(pkt []byte, src *net.UDPAddr) {
 
 	newPeer := &peer{
 		Addr:      src,
-		VirtualIP: net.ParseIP(peerCfg.VirtualIP),
+		VirtualIP: net.ParseIP(peerCfg.Address),
 		s2cKey:    s2cKey,
 		c2sKey:    c2sKey,
 	}
@@ -173,7 +173,7 @@ func handleHandshake(pkt []byte, src *net.UDPAddr) {
 	pendingByAddr[src.String()] = &pendingSession{
 		peer:      newPeer,
 		name:      peerCfg.Name,
-		virtualIP: peerCfg.VirtualIP,
+		virtualIP: peerCfg.Address,
 		createdAt: time.Now(),
 	}
 	pendingMu.Unlock()

@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	buffersize        = 2048
+	buffersize       = 2048
 	handshakeTimeout = 5 * time.Minute
 	keepaliveTimeout = 25 * time.Second
 )
@@ -51,7 +51,7 @@ func Init(config config.PeerConfig) error {
 	}
 
 	var err error
-	iface, err = tunif.SetupInterface(fmt.Sprintf("%s/%d", config.VirtualIP, config.Subnet))
+	iface, err = tunif.SetupInterface(config.Address)
 	if err != nil {
 		return fmt.Errorf("could not create tun interface: %w", err)
 	}
