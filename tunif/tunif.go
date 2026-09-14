@@ -30,6 +30,16 @@ func SetupInterface(localAddr string) (*water.Interface, error) {
 	return iface, nil
 }
 
+func SetupRoutes(name string, routes []string) error {
+	for _, route := range routes {
+		if err := addRoute(name, route); err != nil {
+			return fmt.Errorf("SetupRoutes: failed setting route %q: %w", route, err)
+		}
+	}
+
+	return nil
+}
+
 func SetupFullTunnel(endpoint, ifaceName string) error {
 	if err := addTunnelRoutes(ifaceName); err != nil {
 		return fmt.Errorf("failed to route traffic into the tunnel: %w", err)
