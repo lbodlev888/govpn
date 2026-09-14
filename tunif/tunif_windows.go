@@ -39,14 +39,17 @@ func configureInterface(name, localAddr string) error {
 	return nil
 }
 
+func addRoute(name, subnet string) error {
+	return run("netsh", "interface", "ipv4", "add", "route",
+		"prefix="+subnet, "interface="+name, "store=active")
+}
+
 func addTunnelRoutes(name string) error {
-	if err := run("netsh", "interface", "ipv4", "add", "route",
-		"prefix=0.0.0.0/1", "interface="+name, "store=active"); err != nil {
+	if err := addRoute(name, "0.0.0.0/1"); err != nil {
 		return err
 	}
 
-	return run("netsh", "interface", "ipv4", "add", "route",
-		"prefix=128.0.0.0/1", "interface="+name, "store=active")
+	return addRoute(name, "128.0.0.0/1")
 }
 
 func addBypassRoute(endpoint, gw string) error {

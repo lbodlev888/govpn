@@ -30,12 +30,16 @@ func configureInterface(name, localAddr string) error {
 	return nil
 }
 
+func addRoute(name, subnet string) error {
+	return run("ip", "route", "add", subnet, "dev", name)
+}
+
 func addTunnelRoutes(name string) error {
-	if err := run("ip", "route", "add", "0.0.0.0/1", "dev", name); err != nil {
+	if err := addRoute(name, "0.0.0.0/1"); err != nil {
 		return err
 	}
 
-	return run("ip", "route", "add", "128.0.0.0/1", "dev", name)
+	return addRoute(name, "128.0.0.0/1")
 }
 
 func addBypassRoute(endpoint, gw string) error {
