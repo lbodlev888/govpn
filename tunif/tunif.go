@@ -30,9 +30,9 @@ func SetupInterface(localAddr string) (*water.Interface, error) {
 	return iface, nil
 }
 
-func SetupRoutes(name string, routes []string) error {
+func SetupRoutes(ifaceName string, routes []string) error {
 	for _, route := range routes {
-		if err := addRoute(name, route); err != nil {
+		if err := addRoute(ifaceName, route); err != nil {
 			return fmt.Errorf("SetupRoutes: failed setting route %q: %w", route, err)
 		}
 	}

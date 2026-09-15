@@ -20,18 +20,18 @@ func newTUN(localAddr string) (*water.Interface, error) {
 	})
 }
 
-func configureInterface(name, localAddr string) error {
+func configureInterface(ifaceName, localAddr string) error {
 	addr, mask, err := splitCIDR(localAddr)
 	if err != nil {
 		return err
 	}
 
 	if err := run("netsh", "interface", "ipv4", "set", "address",
-		"name="+name, "source=static", "address="+addr, "mask="+mask, "gateway=none"); err != nil {
+		"name=" + ifaceName, "source=static", "address="+addr, "mask="+mask, "gateway=none"); err != nil {
 		return fmt.Errorf("failed to set local IP address: %w", err)
 	}
 
-	if err := run("netsh", "interface", "ipv4", "set", "subinterface", name,
+	if err := run("netsh", "interface", "ipv4", "set", "subinterface", ifaceName,
 		"mtu="+strconv.Itoa(MTU), "store=active"); err != nil {
 		return fmt.Errorf("failed to set MTU: %w", err)
 	}
@@ -39,17 +39,17 @@ func configureInterface(name, localAddr string) error {
 	return nil
 }
 
-func addRoute(name, subnet string) error {
+func addRoute(ifaceName, subnet string) error {
 	return run("netsh", "interface", "ipv4", "add", "route",
-		"prefix="+subnet, "interface="+name, "store=active")
+		"prefix=" + subnet, "interface=" + ifaceName, "store=active")
 }
 
-func addTunnelRoutes(name string) error {
-	if err := addRoute(name, "0.0.0.0/1"); err != nil {
+func addTunnelRoutes(ifaceName string) error {
+	if err := addRoute(ifaceName, "0.0.0.0/1"); err != nil {
 		return err
 	}
 
-	return addRoute(name, "128.0.0.0/1")
+	return addRoute(ifaceName, "128.0.0.0/1")
 }
 
 func addBypassRoute(endpoint, gw string) error {
