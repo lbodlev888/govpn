@@ -66,7 +66,7 @@ func Init(serverConfiguration config.ServerConfig) error {
 }
 
 func Run(ctx context.Context) {
-	log.Printf("Server listening on %s (UDP, VPN IP: %s/%d)", cfg.Listen, cfg.Address)
+	log.Printf("Server listening on %s (UDP, VPN IP: %s)\n", cfg.Listen, cfg.Address)
 
 	wg.Go(func() { readFromPeers(ctx) })
 	wg.Go(func() { readFromIface(ctx) })
