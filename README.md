@@ -66,7 +66,7 @@ manages peers at runtime. A reference CLI lives in [`examples/sample_client`](ex
 
 ## Requirements
 
-- **Go 1.26+** — the library uses the standard-library `crypto/mlkem` and `crypto/hkdf` packages.
+- **Go 1.27+** — the library uses the standard-library `crypto/mlkem` and `crypto/hkdf` packages.
 - **Linux** The TUN device is created with `songgao/water` and configured by shelling out to the
 - **Windows** The TUN device is created using the same library, also wintun.dll has to be in the same folder as the executable
   `ip` command, so `iproute2` must be installed.
@@ -114,13 +114,12 @@ import (
 func main() {
 	cfg := config.ServerConfig{
 		PrivateKey:  "<server private key>",
-		BindAddress: "0.0.0.0:51820",
-		VirtualIP:   "10.0.0.1",
-		Subnet:      24,
+		Listen: "0.0.0.0:51820",
+		Address:   "10.0.0.1/24", //note: here you'd almost always want the entire network in CIDR format
 		Peers: []config.PeerConfig{{
 			Name:      "laptop",
 			PublicKey: "<laptop public key>",
-			VirtualIP: "10.0.0.2",
+			Address: "10.0.0.2",
 		}},
 	}
 
@@ -142,10 +141,10 @@ cfg := config.PeerConfig{
 	Name:       "laptop",
 	PrivateKey: "<laptop private key>",
 	PublicKey:  "<server public key>", // note: the SERVER's key, not your own
-	VirtualIP:  "10.0.0.2",
-	Subnet:     24,
+	Address:  "10.0.0.2/32", //note: /24 can also be used therefore a dedicated route isnt required
 	Endpoint:   "vpn.example.com:51820",
 	FullTunnel: false,
+    Routes: []string{"10.0.0.0/24", "192.168.1.0/24"}, //ex: first route not needed if the address is /24
 }
 
 if err := client.Init(cfg); err != nil {
@@ -165,9 +164,8 @@ Both config structs carry JSON tags, so they can be loaded straight from a file.
 | Field | JSON | Meaning |
 |---|---|---|
 | `PrivateKey` | `privkey` | The server's own base64 Ed25519 seed. |
-| `BindAddress` | `bind_address` | UDP listen address, e.g. `0.0.0.0:51820`. |
-| `VirtualIP` | `virtual_ip` | The server's address inside the tunnel. |
-| `Subnet` | `subnet` | Prefix length for the server's TUN interface. |
+| `Listen` | `listen` | UDP listen address (old bind_address), e.g. `0.0.0.0:51820`. |
+| `Address` | `Address` | The server's address inside the tunnel in CIDR format (old virtual_ip). |
 | `Peers` | `peers` | The initial set of allowed peers. |
 
 ### `config.PeerConfig`
@@ -180,23 +178,22 @@ depending on which side reads it. This is the one thing worth getting right:
 | `Name` | `name` | This peer's identity, sent in the ClientHello. | The key used to look the peer up. Must match. |
 | `PrivateKey` | `privkey` | **This peer's own** Ed25519 seed. | Unused — leave empty. |
 | `PublicKey` | `pubkey` | **The server's** public key, used to verify the ServerHello. | **This peer's** public key, used to verify its ClientHello. |
-| `VirtualIP` | `virtual_ip` | The address assigned to this peer's TUN interface. | The address the server routes to this peer. |
-| `Subnet` | `subnet` | Prefix length for the TUN interface. | Unused. |
+| `Address` | `address` | The address assigned to this peer's TUN interface. | The address the server routes to this peer. |
 | `Endpoint` | `endpoint` | The server's `host:port`. Required. | Unused. |
 | `FullTunnel` | `fulltunnel` | Route all traffic through the VPN. | Unused. |
 | `Disabled` | `disabled` | Unused. | Reject this peer's handshakes and drop its traffic. |
+| `Routes` | `routes` | Additional subnets that should be routed over the tunnel (same as AllowedIPs in Wireguard) | Unused.
 
 Example server config:
 
 ```json
 {
   "privkey": "...",
-  "bind_address": "0.0.0.0:51820",
-  "virtual_ip": "10.0.0.1",
-  "subnet": 24,
+  "listen": "0.0.0.0:51820",
+  "address": "10.0.0.1/24",
   "peers": [
-    { "name": "laptop", "pubkey": "...", "virtual_ip": "10.0.0.2" },
-    { "name": "phone",  "pubkey": "...", "virtual_ip": "10.0.0.3", "disabled": true }
+    { "name": "laptop", "pubkey": "...", "address": "10.0.0.2" },
+    { "name": "phone",  "pubkey": "...", "address": "10.0.0.3", "disabled": true }
   ]
 }
 ```
@@ -208,12 +205,13 @@ Example client config:
   "name": "laptop",
   "privkey": "...",
   "pubkey": "<server public key>",
-  "virtual_ip": "10.0.0.2",
-  "subnet": 24,
+  "address": "10.0.0.2/24",
   "endpoint": "vpn.example.com:51820",
-  "fulltunnel": true
+  "fulltunnel": true,
+  "routes": ["192.168.1.0/24", "172.16.1.0/24"]
 }
 ```
+Here 10.0.0.0/24 route isnt required as its automatically registered from the address field
 
 ---
 
@@ -319,11 +317,13 @@ const MTU = "1420"
 func SetupInterface(localAddr string) (*water.Interface, error)  // localAddr is CIDR, e.g. "10.0.0.2/24"
 func SetupFullTunnel(endpoint, ifaceName string) error
 func ClearFullTunnel(endpoint string) error
+func SetupRoutes(name string, routes []string) error
 ```
 TUN device creation (named `bvpn0`, `bvpn1`, …) and routing. `SetupFullTunnel` installs `0.0.0.0/1`
 and `128.0.0.0/1` routes over the tunnel — which override the default route without deleting it —
 and pins a host route to the VPN endpoint via the physical gateway so the encrypted packets can still
-get out. `ClearFullTunnel` removes that pinned route.
+get out. `ClearFullTunnel` removes that pinned route. `SetupRoutes` installs a string array via a
+specific interface - `ifaceName`
 
 ### `proto`
 
@@ -377,7 +377,7 @@ Two things to know before you build on this:
   and are designed to be called concurrently with a running `Run`.
 
 To onboard a peer, generate a keypair, hand the private key to the peer, and register the public key
-with `server.NewPeer` — the peer's `Name` and `VirtualIP` are assigned by you, not chosen by the peer.
+with `server.NewPeer` — the peer's `Name` and `Address` are assigned by you, not chosen by the peer.
 
 ---
 
@@ -451,15 +451,15 @@ The server routes on the decrypted IPv4 destination address:
 - **Anything else** → the frame is written to the server's TUN interface and handed to the host kernel.
 
 Traffic to the wider internet therefore requires the usual host setup on the server: enable
-`net.ipv4.ip_forward` and add a NAT rule (e.g. `iptables -t nat -A POSTROUTING -s 10.0.0.0/24 -o eth0
--j MASQUERADE`). The library configures the tunnel, not your firewall.
+`net.ipv4.ip_forward` and add a NAT rule (e.g. `iptables -t nat -A POSTROUTING -s <vpn subnet>
+-o <exit interface> -j MASQUERADE`). The library configures the tunnel, not your firewall.
 
 ### Rekeying and keepalives
 
-The client re-runs the handshake every 5 minutes, or immediately if a UDP write fails. Each rekey
-generates a brand-new ML-KEM keypair, replaces both session keys, resets the replay filter, and
-restarts the nonce counters from zero. A 5-byte keepalive is sent every 25 seconds to hold NAT
-mappings open.
+The client re-runs the handshake every 5 minutes, immediately if a UDP write fails or if a keepalive
+ack was not received 5s after a keepalive syn was sent. Each rekey generates a brand-new ML-KEM
+keypair, replaces both session keys, resets the replay filter, and restarts the nonce counters from
+zero. A 29-byte authenticated keepalive is sent every 25 seconds to hold NAT mappings open.
 
 ### Message types
 
@@ -514,7 +514,6 @@ Worth knowing before you deploy this:
 - **One server and one client per process** (package-level state).
 - **The protocol has no version field,** so there is no in-band way to negotiate a future cipher
   change — a flag day is required.
-- **Keepalives are unauthenticated** and currently only logged by the server.
 - **Not audited.** This is a from-scratch implementation of a homegrown protocol, written to be
   understood, not to be a drop-in replacement for WireGuard.
 
