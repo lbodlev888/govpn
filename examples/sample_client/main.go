@@ -49,7 +49,6 @@ func main() {
 		log.Fatalln("Missing configuration file")
 	}
 
-	//move version key to org
 	ctx, _ := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 
 	rawConfig, err := os.ReadFile(*configFile)

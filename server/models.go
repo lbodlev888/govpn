@@ -9,8 +9,8 @@ import (
 )
 
 type peer struct {
-	Addr         *net.UDPAddr
-	VirtualIP    net.IP
+	addr         *net.UDPAddr
+	virtualIP    net.IP
 	disabled     bool
 	c2sKey       []byte
 	s2cKey       []byte

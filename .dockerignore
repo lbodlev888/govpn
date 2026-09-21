@@ -1,0 +1,7 @@
+.git/
+assets/
+scripts/
+.gitignore
+govpn
+LICENSE
+README.MD
