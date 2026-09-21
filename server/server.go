@@ -43,14 +43,16 @@ func Init(serverConfiguration config.ServerConfig) error {
 		return fmt.Errorf("Init: could not import private key: %w", err)
 	}
 
-	loadAllowedPeers()
+	if err := loadAllowedPeers(); err != nil {
+		return fmt.Errorf("Init: failed to load allowed peers: %w", err)
+	}
 
-	iface, err = tunif.SetupInterface(fmt.Sprintf("%s/%d", cfg.VirtualIP, cfg.Subnet))
+	iface, err = tunif.SetupInterface(cfg.Address)
 	if err != nil {
 		return fmt.Errorf("Init: could not create tun interface: %w", err)
 	}
 
-	udpAddr, err := net.ResolveUDPAddr("udp", cfg.BindAddress)
+	udpAddr, err := net.ResolveUDPAddr("udp", cfg.Listen)
 	if err != nil {
 		return fmt.Errorf("Init: could not resolve bind address: %w", err)
 	}
@@ -64,7 +66,7 @@ func Init(serverConfiguration config.ServerConfig) error {
 }
 
 func Run(ctx context.Context) {
-	log.Printf("Server listening on %s (UDP, VPN IP: %s/%d)", cfg.BindAddress, cfg.VirtualIP, cfg.Subnet)
+	log.Printf("Server listening on %s (UDP, VPN IP: %s)\n", cfg.Listen, cfg.Address)
 
 	wg.Go(func() { readFromPeers(ctx) })
 	wg.Go(func() { readFromIface(ctx) })
@@ -117,11 +119,11 @@ func RemovePeer(name string) {
 	}
 	delete(allowedPeers, name)
 
-	virtualPeer, ok := peersByIP[peer.VirtualIP]
+	virtualPeer, ok := peersByIP[peer.Address]
 	if !ok {
 		return
 	}
-	delete(peersByIP, peer.VirtualIP)
+	delete(peersByIP, peer.Address)
 
 	addr := virtualPeer.Addr.String()
 	_, ok = peersByAddr[addr]
@@ -145,7 +147,7 @@ func EnablePeer(name string) {
 	peersMu.Lock()
 	defer peersMu.Unlock()
 
-	virtualPeer, ok := peersByIP[peer.VirtualIP]
+	virtualPeer, ok := peersByIP[peer.Address]
 	if !ok {
 		return
 	}
@@ -170,7 +172,7 @@ func DisablePeer(name string) {
 
 	peersMu.Lock()
 	defer peersMu.Unlock()
-	virtualPeer, ok := peersByIP[peer.VirtualIP]
+	virtualPeer, ok := peersByIP[peer.Address]
 	if !ok {
 		return
 	}

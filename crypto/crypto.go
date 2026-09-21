@@ -3,7 +3,6 @@ package crypto
 import (
 	"crypto/ed25519"
 	"crypto/hkdf"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
@@ -14,7 +13,7 @@ import (
 )
 
 func GeneratePrivate() (string, error) {
-	_, sk, err := ed25519.GenerateKey(rand.Reader)
+	_, sk, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		return "", fmt.Errorf("could not generate decaps key: %w", err)
 	}

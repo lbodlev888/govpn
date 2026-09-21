@@ -1,20 +1,19 @@
 package config
 
 type PeerConfig struct {
-	Name       string `json:"name"`
-	PrivateKey string `json:"privkey,omitempty"`
-	PublicKey  string `json:"pubkey"`
-	VirtualIP  string `json:"virtual_ip"`
-	Subnet     int    `json:"subnet,omitempty"`
-	Endpoint   string `json:"endpoint,omitempty"`
-	FullTunnel bool   `json:"fulltunnel,omitempty"`
-	Disabled   bool   `json:"disabled,omitempty"`
+	Name       string   `json:"name"`
+	PrivateKey string   `json:"privkey,omitempty"`
+	PublicKey  string   `json:"pubkey"`
+	Address    string   `json:"address"`
+	Endpoint   string   `json:"endpoint,omitempty"`
+	FullTunnel bool     `json:"fulltunnel,omitempty"`
+	Disabled   bool     `json:"disabled,omitempty"`
+	Routes     []string `json:"routes,omitempty"`
 }
 
 type ServerConfig struct {
-	PrivateKey  string       `json:"privkey"`
-	BindAddress string       `json:"bind_address"`
-	VirtualIP   string       `json:"virtual_ip"`
-	Subnet      int          `json:"subnet"`
-	Peers       []PeerConfig `json:"peers"`
+	PrivateKey string       `json:"privkey"`
+	Listen     string       `json:"listen"`
+	Address    string       `json:"address"`
+	Peers      []PeerConfig `json:"peers"`
 }

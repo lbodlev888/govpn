@@ -6,15 +6,20 @@ import (
 	"fmt"
 )
 
-func loadAllowedPeers() {
+func loadAllowedPeers() error {
 	allowedPeersMu.Lock()
 	defer allowedPeersMu.Unlock()
 
 	clear(allowedPeers)
 
 	for _, p := range cfg.Peers {
+		if p.Address == "" || p.Name == "" || p.PublicKey == "" {
+			return fmt.Errorf("loadAllowedPeers: peers have incomplete configs")
+		}
 		allowedPeers[p.Name] = p
 	}
+
+	return nil
 }
 
 func checkPublicKey(pubKey string) error {
