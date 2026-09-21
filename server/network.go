@@ -79,8 +79,8 @@ func handleConfirm(packet []byte, src *net.UDPAddr) {
 	pendingMu.Unlock()
 
 	peersMu.Lock()
-	if old, ok := peersByIP[pend.virtualIP]; ok && old.Addr.String() != src.String() {
-		delete(peersByAddr, old.Addr.String())
+	if old, ok := peersByIP[pend.virtualIP]; ok && old.addr.String() != src.String() {
+		delete(peersByAddr, old.addr.String())
 	}
 	peersByIP[pend.virtualIP] = pend.peer
 	peersByAddr[src.String()] = pend.peer
@@ -158,15 +158,15 @@ func handleHandshake(pkt []byte, src *net.UDPAddr) {
 	}
 
 	newPeer := &peer{
-		Addr:      src,
-		VirtualIP: net.ParseIP(peerCfg.Address),
+		addr:      src,
+		virtualIP: net.ParseIP(peerCfg.Address),
 		s2cKey:    s2cKey,
 		c2sKey:    c2sKey,
 	}
 
 	pendingMu.Lock()
 	for k, p := range pendingByAddr {
-		if time.Since(p.createdAt) > 5 * time.Second {
+		if time.Since(p.createdAt) > 2 * time.Second {
 			delete(pendingByAddr, k)
 		}
 	}
@@ -254,8 +254,8 @@ func sendEncrypted(peer *peer, messageType byte, frame []byte) {
 	out = append(out, nonce...)
 	out = cipher.Seal(out, nonce, frame, out[:13])
 
-	if _, err := udpConn.WriteToUDP(out, peer.Addr); err != nil {
-		log.Println("Failed to send to peer " + peer.Addr.String() + ": " + err.Error())
+	if _, err := udpConn.WriteToUDP(out, peer.addr); err != nil {
+		log.Println("Failed to send to peer " + peer.addr.String() + ": " + err.Error())
 	}
 }
 

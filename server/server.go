@@ -125,7 +125,7 @@ func RemovePeer(name string) {
 	}
 	delete(peersByIP, peer.Address)
 
-	addr := virtualPeer.Addr.String()
+	addr := virtualPeer.addr.String()
 	_, ok = peersByAddr[addr]
 	if !ok {
 		return
@@ -153,7 +153,7 @@ func EnablePeer(name string) {
 	}
 	virtualPeer.disabled = false
 
-	logicalPeer, ok := peersByAddr[virtualPeer.Addr.String()]
+	logicalPeer, ok := peersByAddr[virtualPeer.addr.String()]
 	if !ok {
 		return
 	}
@@ -178,7 +178,7 @@ func DisablePeer(name string) {
 	}
 	virtualPeer.disabled = true
 
-	logicalPeer, ok := peersByAddr[virtualPeer.Addr.String()]
+	logicalPeer, ok := peersByAddr[virtualPeer.addr.String()]
 	if !ok {
 		return
 	}
