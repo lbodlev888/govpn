@@ -72,10 +72,18 @@ func udpReadLoop(ctx context.Context) {
 
 		switch buf[0] {
 		case proto.MsgServerHello:
-			serverHelloChan <- append([]byte(nil), buf[:n]...)
+			select {
+			case <-ctx.Done():
+				return
+			case serverHelloChan <- append([]byte(nil), buf[:n]...):
+			}
 			continue
 		case proto.MsgKeepAliveACK:
-			keepAliveChan <- append([]byte(nil), buf[:n]...)
+			select {
+			case <-ctx.Done():
+				return
+			case keepAliveChan <- append([]byte(nil), buf[:n]...):
+			}
 			continue
 		}
 

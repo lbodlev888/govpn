@@ -101,10 +101,22 @@ func Init(config config.PeerConfig) error {
 func Run(ctx context.Context) {
 	var wg sync.WaitGroup
 
-	wg.Go(func() { rehandshakeLoop(ctx) })
-	wg.Go(func() { keepaliveLoop(ctx) })
-	wg.Go(func() { udpReadLoop(ctx) })
-	wg.Go(func() { tunReadLoop(ctx) })
+	wg.Go(func() {
+		rehandshakeLoop(ctx)
+		log.Println("1 exited")
+	})
+	wg.Go(func() {
+		keepaliveLoop(ctx)
+		log.Println("2 exited")
+	})
+	wg.Go(func() {
+		udpReadLoop(ctx)
+		log.Println("3 exited")
+	})
+	wg.Go(func() {
+		tunReadLoop(ctx)
+		log.Println("4 exited")
+	})
 
 	wg.Go(func() {
 		<-ctx.Done()
@@ -114,8 +126,12 @@ func Run(ctx context.Context) {
 				log.Println("Failed to clear full tunnel: " + err.Error())
 			}
 		}
-		_ = conn.Close()
-		_ = iface.Close()
+		if err := conn.Close(); err != nil {
+			log.Println("Failed to close conn: " + err.Error())
+		}
+		if err := iface.Close(); err != nil {
+			log.Println("Failed to close tun: " + err.Error())
+		}
 	})
 
 	wg.Wait()
