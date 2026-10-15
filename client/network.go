@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"log"
+	"math/rand/v2"
 	"time"
 
 	"github.com/lbodlev888/govpn/crypto"
@@ -128,8 +129,14 @@ func tunReadLoop(ctx context.Context) {
 }
 
 func rehandshakeLoop(ctx context.Context) {
+	attempt := 0
 	for {
-		if ctx.Err() != nil {
+		t := delay(attempt)
+		log.Printf("Now waiting: %v\n", t)
+		attempt += 1
+		select {
+		case <-time.After(t):
+		case <-ctx.Done():
 			return
 		}
 
@@ -220,6 +227,7 @@ func rehandshakeLoop(ctx context.Context) {
 
 		sendEncrypted(proto.MsgClientConfirm, nil)
 		log.Println("Latest handshake " + time.Now().Format(time.RFC1123))
+		attempt = 0
 
 		select {
 		case <-ctx.Done():
@@ -283,4 +291,15 @@ func parseEncrypted(expectedFlag byte, packet []byte) ([]byte, error) {
 	}
 
 	return plaintext, nil
+}
+
+func delay(attempt int) time.Duration {
+	const base, max = time.Second, 60 * time.Second
+	d := base << attempt
+
+	if d < 0 || d > max {
+		d = max
+	}
+
+	return time.Duration(rand.Int64N(int64(d)))
 }
