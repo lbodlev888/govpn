@@ -97,23 +97,20 @@ func SignServerHello(privKey ed25519.PrivateKey, h *proto.ServerHello) error {
 	return nil
 }
 
-func CheckClientHello(pubKey ed25519.PublicKey, h proto.ClientHello) bool {
-	payloadLen := len(h.Name) + proto.MLKEM768EncapsLen + proto.TimestampLen
-	payload := make([]byte, 0, payloadLen)
-	payload = append(payload, h.Name...)
-	payload = append(payload, h.EncapsKey...)
-	payload = append(payload, h.Timestamp...)
-
+func CheckClientHello(pubKey ed25519.PublicKey, payload []byte, h *proto.ClientHello) bool {
 	timestamp := int64(binary.BigEndian.Uint64(h.Timestamp))
-	signTime := time.Unix(timestamp, 0)
-	diff := time.Since(signTime).Abs()
+	diff := time.Now().Unix() - timestamp
+	if diff < 0 {
+		diff *= -1
+	}
 
-	return diff < 2*time.Second && ed25519.VerifyWithOptions(pubKey, payload, h.Signature, &ed25519.Options{Context: "clientHello"}) == nil
+	payloadLen := len(h.Name) + proto.MLKEM768EncapsLen + proto.TimestampLen
+
+	status := diff < 2 && ed25519.VerifyWithOptions(pubKey, payload[2:2+payloadLen], h.Signature, &ed25519.Options{Context: "clientHello"}) == nil
+
+	return status
 }
 
 func CheckServerHello(pubKey ed25519.PublicKey, h proto.ServerHello) bool {
-	payload := make([]byte, 0, proto.MLKEM768CiphertextLen)
-	payload = append(payload, h.Ciphertext...)
-
-	return ed25519.VerifyWithOptions(pubKey, payload, h.Signature, &ed25519.Options{Context: "serverHello"}) == nil
+	return ed25519.VerifyWithOptions(pubKey, h.Ciphertext, h.Signature, &ed25519.Options{Context: "serverHello"}) == nil
 }

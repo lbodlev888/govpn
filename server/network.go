@@ -115,7 +115,7 @@ func handleHandshake(pkt []byte, src *net.UDPAddr) {
 		return
 	}
 
-	if !crypto.CheckClientHello(pubKey, clientHello) {
+	if !crypto.CheckClientHello(pubKey, pkt, &clientHello) {
 		log.Printf("Invalid signature on client hello from %s\n", peerCfg.Name)
 		return
 	}
