@@ -114,8 +114,12 @@ func Run(ctx context.Context) {
 				log.Println("Failed to clear full tunnel: " + err.Error())
 			}
 		}
-		_ = conn.Close()
-		_ = iface.Close()
+		if err := conn.Close(); err != nil {
+			log.Println("Failed to close conn: " + err.Error())
+		}
+		if err := iface.Close(); err != nil {
+			log.Println("Failed to close tun: " + err.Error())
+		}
 	})
 
 	wg.Wait()
