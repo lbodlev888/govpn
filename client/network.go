@@ -294,7 +294,7 @@ func parseEncrypted(expectedFlag byte, packet []byte) ([]byte, error) {
 }
 
 func delay(attempt int) time.Duration {
-	const base, max = time.Second, 60 * time.Second
+	const base, max = time.Second, 32 * time.Second
 	d := base << attempt
 
 	if d < 0 || d > max {
