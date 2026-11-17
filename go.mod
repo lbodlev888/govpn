@@ -9,8 +9,10 @@ require (
 )
 
 require (
+	github.com/vishvananda/netlink v1.3.1 // indirect
+	github.com/vishvananda/netns v0.0.5 // indirect
 	golang.org/x/net v0.56.0 // indirect
-	golang.org/x/sys v0.46.0 // indirect
+	golang.org/x/sys v0.49.0 // indirect
 )
 
 replace github.com/songgao/water => github.com/lbodlev888/water v0.0.2-0.20260712213340-e18a986cac0b
