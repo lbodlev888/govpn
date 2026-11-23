@@ -267,10 +267,6 @@ func parseEncrypted(peer *peer, packet []byte) ([]byte, error) {
 	nonce := packet[1:1 + chacha20poly1305.NonceSize]
 	ciphertext := packet[1 + chacha20poly1305.NonceSize:]
 
-	if !peer.filter.ValidateNonce(binary.BigEndian.Uint64(nonce)) {
-		return nil, fmt.Errorf("invalid nonce")
-	}
-
 	cipher, err := chacha20poly1305.New(peer.c2sKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to init cipher: %w", err)
@@ -279,6 +275,10 @@ func parseEncrypted(peer *peer, packet []byte) ([]byte, error) {
 	plaintext, err := cipher.Open(nil, nonce, ciphertext, packet[:13])
 	if err != nil {
 		return nil, fmt.Errorf("failed decrypting: %w", err)
+	}
+
+	if !peer.filter.ValidateNonce(binary.BigEndian.Uint64(nonce)) {
+		return nil, fmt.Errorf("invalid nonce")
 	}
 
 	return plaintext, nil
