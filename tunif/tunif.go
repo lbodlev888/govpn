@@ -1,13 +1,16 @@
 package tunif
 
 import (
+	"context"
 	"fmt"
+	"log"
 	"net"
-	"os"
 	"os/exec"
+	"time"
 
 	"github.com/jackpal/gateway"
 	"github.com/songgao/water"
+	"github.com/vishvananda/netlink"
 )
 
 const MTU = 1420
@@ -58,11 +61,33 @@ func ClearFullTunnel(endpoint string) error {
 	return delBypassRoute(endpoint)
 }
 
+func EnsureBypassRoute(ctx context.Context, endpointAddr string, rehandshakeCh chan struct{}) error {
+	doneCh := make(chan struct{})
+	routesCh := make(chan netlink.RouteUpdate, 10)
+	if err := netlink.RouteSubscribe(routesCh, doneCh); err != nil {
+		return fmt.Errorf("failed to subscribe to route update: %w", err)
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			close(doneCh)
+			return nil
+		case <-routesCh:
+			log.Println("updating routes")
+			if gw, err := gateway.DiscoverGateway(); err != nil {
+				log.Println("Failed extracting default gateway: " + err.Error())
+				time.Sleep(time.Second / 2)
+			} else {
+				addBypassRoute(endpointAddr, gw.String())
+				rehandshakeCh <- struct{}{}
+			}
+		}
+	}
+}
+
 func run(name string, args ...string) error {
 	cmd := exec.Command(name, args...)
-	cmd.Stderr = os.Stderr
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
 
 	return cmd.Run()
 }
