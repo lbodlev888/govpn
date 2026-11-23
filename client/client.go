@@ -21,7 +21,7 @@ import (
 
 const (
 	buffersize       = 2048
-	handshakeTimeout = 5 * time.Minute
+	sessionTimeout = 5 * time.Minute
 	keepaliveTimeout = 25 * time.Second
 )
 
@@ -29,7 +29,7 @@ var (
 	iface           *water.Interface
 	s2cKey, c2sKey  atomic.Pointer[[chacha20poly1305.KeySize]byte]
 	lastNonceOut    atomic.Uint64
-	cipherChan      chan struct{}
+	rehandshakeChan chan struct{}
 	serverHelloChan chan []byte
 	keepAliveChan   chan []byte
 	serverAddr      *net.UDPAddr
@@ -38,10 +38,11 @@ var (
 	privKey         ed25519.PrivateKey
 	pubKey          ed25519.PublicKey
 	filter          proto.Filter
+	endpointAddr	string
 )
 
 func Init(config config.PeerConfig) error {
-	cipherChan = make(chan struct{})
+	rehandshakeChan = make(chan struct{}, 1)
 	serverHelloChan = make(chan []byte)
 	keepAliveChan = make(chan []byte)
 	cfg = &config
@@ -65,6 +66,7 @@ func Init(config config.PeerConfig) error {
 		if !found {
 			return fmt.Errorf("init: invalid endpoint: should be <address>:<port>")
 		}
+		endpointAddr = endpoint
 
 		if err := tunif.SetupFullTunnel(endpoint, iface.Name()); err != nil {
 			_ = tunif.ClearFullTunnel(endpoint)
@@ -101,10 +103,28 @@ func Init(config config.PeerConfig) error {
 func Run(ctx context.Context) {
 	var wg sync.WaitGroup
 
-	wg.Go(func() { rehandshakeLoop(ctx) })
-	wg.Go(func() { keepaliveLoop(ctx) })
-	wg.Go(func() { udpReadLoop(ctx) })
-	wg.Go(func() { tunReadLoop(ctx) })
+	wg.Go(func() {
+		rehandshakeLoop(ctx)
+		log.Println("1 exited")
+	})
+	wg.Go(func() {
+		keepaliveLoop(ctx)
+		log.Println("2 exited")
+	})
+	wg.Go(func() {
+		udpReadLoop(ctx)
+		log.Println("3 exited")
+	})
+	wg.Go(func() {
+		tunReadLoop(ctx)
+		log.Println("4 exited")
+	})
+	if cfg.FullTunnel {
+		wg.Go(func() {
+			tunif.EnsureBypassRoute(ctx, endpointAddr, rehandshakeChan)
+			log.Println("5 exited")
+		})
+	}
 
 	wg.Go(func() {
 		<-ctx.Done()
@@ -120,6 +140,11 @@ func Run(ctx context.Context) {
 		if err := iface.Close(); err != nil {
 			log.Println("Failed to close tun: " + err.Error())
 		}
+
+		close(serverHelloChan)
+		close(rehandshakeChan)
+		close(keepAliveChan)
+		log.Println("6 exited")
 	})
 
 	wg.Wait()

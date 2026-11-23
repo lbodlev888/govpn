@@ -41,7 +41,7 @@ func keepaliveLoop(ctx context.Context) {
 		case <-time.After(5 * time.Second):
 			c2sKey.Store(nil)
 			s2cKey.Store(nil)
-			cipherChan <- struct{}{}
+			rehandshakeChan <- struct{}{}
 			continue
 		case keepaliveAck = <- keepAliveChan:
 		}
@@ -49,7 +49,7 @@ func keepaliveLoop(ctx context.Context) {
 		if _, err := parseEncrypted(proto.MsgKeepAliveACK, keepaliveAck); err != nil {
 			c2sKey.Store(nil)
 			s2cKey.Store(nil)
-			cipherChan <- struct{}{}
+			rehandshakeChan <- struct{}{}
 			log.Println("invalid keepaliveAck")
 		}
 	}
@@ -232,8 +232,8 @@ func rehandshakeLoop(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(handshakeTimeout): //re-establish encrypted connection
-		case <-cipherChan:
+		case <-time.After(sessionTimeout): //re-establish encrypted connection
+		case <-rehandshakeChan:
 		}
 	}
 }
