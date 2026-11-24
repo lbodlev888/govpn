@@ -264,7 +264,7 @@ func sendEncrypted(messageType byte, packet []byte) {
 }
 
 func parseEncrypted(expectedFlag byte, packet []byte) ([]byte, error) {
-	if len(packet) < chacha20poly1305.NonceSize || packet[0] != expectedFlag {
+	if len(packet) < 1 + chacha20poly1305.NonceSize + chacha20poly1305.Overhead || packet[0] != expectedFlag {
 		return nil, fmt.Errorf("invalid packet: too small or header mismatch")
 	}
 
@@ -276,10 +276,6 @@ func parseEncrypted(expectedFlag byte, packet []byte) ([]byte, error) {
 	nonce := packet[1:1+chacha20poly1305.NonceSize]
 	ciphertext := packet[1+chacha20poly1305.NonceSize:]
 
-	if !filter.ValidateNonce(binary.BigEndian.Uint64(nonce)) {
-		return nil, fmt.Errorf("invalid nonce")
-	}
-
 	cipher, err := chacha20poly1305.New(s2c[:])
 	if err != nil {
 		return nil, fmt.Errorf("failed to init cipher: %w", err)
@@ -288,6 +284,10 @@ func parseEncrypted(expectedFlag byte, packet []byte) ([]byte, error) {
 	plaintext, err := cipher.Open(nil, nonce, ciphertext, packet[:13])
 	if err != nil {
 		return nil, fmt.Errorf("failed decrypting: %w", err)
+	}
+
+	if !filter.ValidateNonce(binary.BigEndian.Uint64(nonce)) {
+		return nil, fmt.Errorf("invalid nonce")
 	}
 
 	return plaintext, nil
