@@ -19,7 +19,7 @@ func keepaliveLoop(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(keepaliveTimeout):
+		case <-time.After(time.Duration(cfg.Keepalive) * time.Second):
 		}
 
 		//do not send keepalives if the session isnt initialized
