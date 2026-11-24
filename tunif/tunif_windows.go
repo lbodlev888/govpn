@@ -44,14 +44,6 @@ func addRoute(ifaceName, subnet string) error {
 		"prefix=" + subnet, "interface=" + ifaceName, "store=active")
 }
 
-func addTunnelRoutes(ifaceName string) error {
-	if err := addRoute(ifaceName, "0.0.0.0/1"); err != nil {
-		return err
-	}
-
-	return addRoute(ifaceName, "128.0.0.0/1")
-}
-
 func addBypassRoute(endpoint, gw string) error {
 	return run("route", "add", endpoint, "mask", "255.255.255.255", gw)
 }

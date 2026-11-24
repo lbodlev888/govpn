@@ -91,3 +91,19 @@ func run(name string, args ...string) error {
 
 	return cmd.Run()
 }
+
+func addTunnelRoutes(ifaceName string) error {
+	if err := addRoute(ifaceName, "0.0.0.0/1"); err != nil {
+		return err
+	}
+
+	if err := addRoute(ifaceName, "128.0.0.0/1"); err != nil {
+		return err
+	}
+
+	if err := addRoute(ifaceName, "::/1"); err != nil {
+		return err
+	}
+
+	return addRoute(ifaceName, "8000::/1")
+}
