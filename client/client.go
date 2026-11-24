@@ -42,8 +42,8 @@ var (
 
 func Init(config config.PeerConfig) error {
 	rehandshakeChan = make(chan struct{}, 1)
-	serverHelloChan = make(chan []byte)
-	keepAliveChan = make(chan []byte)
+	serverHelloChan = make(chan []byte, 1)
+	keepAliveChan = make(chan []byte, 1)
 	cfg = &config
 
 	if config.Endpoint == "" {

@@ -109,7 +109,7 @@ func tunReadLoop(ctx context.Context) {
 			return
 		}
 
-		//ignore all packets until a valid session gets established
+		//ignore all packets until a valid session is established
 		if c2sKey.Load() == nil {
 			<-time.After(100 * time.Millisecond)
 			continue
