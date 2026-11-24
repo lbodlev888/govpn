@@ -66,7 +66,7 @@ func handleConfirm(packet []byte, src *net.UDPAddr) {
 	pendingMu.Lock()
 	pend, ok := pendingByAddr[src.String()]
 	pendingMu.Unlock()
-	if !ok {
+	if !ok || time.Since(pend.createdAt) > 5 * time.Second {
 		return
 	}
 
