@@ -9,6 +9,7 @@ type PeerConfig struct {
 	FullTunnel bool     `json:"fulltunnel,omitempty"`
 	Disabled   bool     `json:"disabled,omitempty"`
 	Routes     []string `json:"routes,omitempty"`
+	Keepalive  int		`json:"keepalive,omitempty"`
 }
 
 type ServerConfig struct {
