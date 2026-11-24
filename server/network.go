@@ -198,6 +198,12 @@ func handleData(packet []byte, src *net.UDPAddr) {
 	}
 
 	dstIP := net.IP(frame[16:20]).String()
+	srcIP := net.IP(frame[12:16])
+
+	if !srcIP.Equal(peer.virtualIP) {
+		log.Printf("handleData: forgedIP from %s pretending to be %s\n", peer.virtualIP.String(), srcIP.String())
+		return
+	}
 
 	peersMu.RLock()
 	dstPeer, ok := peersByIP[dstIP]
