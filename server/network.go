@@ -182,7 +182,6 @@ func handleHandshake(pkt []byte, src *net.UDPAddr) {
 func handleData(packet []byte, src *net.UDPAddr) {
 	peersMu.RLock()
 	peer, ok := peersByAddr[src.String()]
-	peersMu.RUnlock()
 	if !ok || peer.disabled {
 		return
 	}
@@ -192,6 +191,8 @@ func handleData(packet []byte, src *net.UDPAddr) {
 		log.Println("handleData: " + err.Error())
 		return
 	}
+
+	peersMu.RUnlock()
 
 	if len(frame) < 20 || frame[0] >> 4 != 4 {
 		return
@@ -207,7 +208,7 @@ func handleData(packet []byte, src *net.UDPAddr) {
 
 	peersMu.RLock()
 	dstPeer, ok := peersByIP[dstIP]
-	peersMu.RUnlock()
+	defer peersMu.RUnlock()
 	if !ok {
 		_, _ = iface.Write(frame)
 		return
