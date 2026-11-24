@@ -2,6 +2,7 @@
 assets/
 scripts/
 .gitignore
+*.json
 govpn
 LICENSE
 README.MD
