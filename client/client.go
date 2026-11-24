@@ -22,7 +22,6 @@ import (
 const (
 	buffersize       = 2048
 	sessionTimeout = 5 * time.Minute
-	keepaliveTimeout = 25 * time.Second
 )
 
 var (
@@ -107,10 +106,14 @@ func Run(ctx context.Context) {
 		rehandshakeLoop(ctx)
 		log.Println("1 exited")
 	})
-	wg.Go(func() {
-		keepaliveLoop(ctx)
-		log.Println("2 exited")
-	})
+
+	if cfg.Keepalive > 0 {
+		wg.Go(func() {
+			keepaliveLoop(ctx)
+			log.Println("2 exited")
+		})
+	}
+
 	wg.Go(func() {
 		udpReadLoop(ctx)
 		log.Println("3 exited")
