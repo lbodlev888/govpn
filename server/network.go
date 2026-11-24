@@ -166,7 +166,7 @@ func handleHandshake(pkt []byte, src *net.UDPAddr) {
 
 	pendingMu.Lock()
 	for k, p := range pendingByAddr {
-		if time.Since(p.createdAt) > 2 * time.Second {
+		if time.Since(p.createdAt) > 5 * time.Second {
 			delete(pendingByAddr, k)
 		}
 	}
