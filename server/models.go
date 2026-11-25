@@ -16,11 +16,11 @@ type peer struct {
 	s2cKey       []byte
 	lastNonceOut atomic.Uint64
 	filter       proto.Filter
+	createdAt	 time.Time
 }
 
 type pendingSession struct {
 	peer      *peer
 	name      string
 	virtualIP string
-	createdAt time.Time
 }
