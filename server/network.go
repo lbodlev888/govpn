@@ -47,9 +47,9 @@ func readFromPeers(ctx context.Context) {
 
 func handleKeepAlive(packet []byte, src *net.UDPAddr) {
 	peersMu.RLock()
+	defer peersMu.RUnlock()
 	peer, ok := peersByAddr[src.String()]
-	peersMu.RUnlock()
-	if !ok {
+	if !ok || peer.disabled {
 		log.Println("Got keepalive from unexisting peer")
 		return
 	}
@@ -64,9 +64,9 @@ func handleKeepAlive(packet []byte, src *net.UDPAddr) {
 
 func handleConfirm(packet []byte, src *net.UDPAddr) {
 	pendingMu.Lock()
+	defer pendingMu.Unlock()
 	pend, ok := pendingByAddr[src.String()]
-	pendingMu.Unlock()
-	if !ok {
+	if !ok || time.Since(pend.peer.createdAt) > 5 * time.Second {
 		return
 	}
 
@@ -74,17 +74,22 @@ func handleConfirm(packet []byte, src *net.UDPAddr) {
 		return
 	}
 
-	pendingMu.Lock()
 	delete(pendingByAddr, src.String())
-	pendingMu.Unlock()
+
+	allowedPeersMu.RLock()
+	defer allowedPeersMu.RUnlock()
+	peerCfg, ok := allowedPeers[pend.name]
+	if !ok || peerCfg.Disabled {
+		return
+	}
 
 	peersMu.Lock()
+	defer peersMu.Unlock()
 	if old, ok := peersByIP[pend.virtualIP]; ok && old.addr.String() != src.String() {
 		delete(peersByAddr, old.addr.String())
 	}
 	peersByIP[pend.virtualIP] = pend.peer
 	peersByAddr[src.String()] = pend.peer
-	peersMu.Unlock()
 
 	log.Printf("Peer confirmed: %s -> %s (from %s)\n", pend.name, pend.virtualIP, src)
 }
@@ -162,11 +167,14 @@ func handleHandshake(pkt []byte, src *net.UDPAddr) {
 		virtualIP: net.ParseIP(peerCfg.Address),
 		s2cKey:    s2cKey,
 		c2sKey:    c2sKey,
+		createdAt: time.Now(),
 	}
 
 	pendingMu.Lock()
+	defer pendingMu.Unlock()
+
 	for k, p := range pendingByAddr {
-		if time.Since(p.createdAt) > 2 * time.Second {
+		if time.Since(p.peer.createdAt) > 5 * time.Second {
 			delete(pendingByAddr, k)
 		}
 	}
@@ -174,15 +182,21 @@ func handleHandshake(pkt []byte, src *net.UDPAddr) {
 		peer:      newPeer,
 		name:      peerCfg.Name,
 		virtualIP: peerCfg.Address,
-		createdAt: time.Now(),
 	}
-	pendingMu.Unlock()
 }
 
 func handleData(packet []byte, src *net.UDPAddr) {
 	peersMu.RLock()
+	defer peersMu.RUnlock()
 	peer, ok := peersByAddr[src.String()]
 	if !ok || peer.disabled {
+		return
+	}
+
+	if time.Since(peer.createdAt) > 5 * time.Minute {
+		log.Println("Peer session lasted longer than expected")
+		delete(peersByAddr, src.String())
+		delete(peersByIP, peer.virtualIP.String())
 		return
 	}
 
@@ -191,8 +205,6 @@ func handleData(packet []byte, src *net.UDPAddr) {
 		log.Println("handleData: " + err.Error())
 		return
 	}
-
-	peersMu.RUnlock()
 
 	if len(frame) < 20 || frame[0] >> 4 != 4 {
 		return
@@ -208,7 +220,7 @@ func handleData(packet []byte, src *net.UDPAddr) {
 
 	peersMu.RLock()
 	dstPeer, ok := peersByIP[dstIP]
-	defer peersMu.RUnlock()
+	peersMu.RUnlock()
 	if !ok {
 		_, _ = iface.Write(frame)
 		return
